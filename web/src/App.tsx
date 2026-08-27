@@ -331,19 +331,19 @@ function App() {
       <main className="content">
         <header className="masthead">
           <h1>News Digest</h1>
-          <span className="date">{todayLabel}</span>
+          <p className="tagline">Your topics, matched against fresh articles every morning.</p>
+          <div className="dateline">
+            <span className="date">{todayLabel}</span>
+            <span className="fetch-status">
+              {fetching
+                ? "Fetching…"
+                : (fetchStatus ?? "Pulls fresh articles, then re-scores every topic.")}
+            </span>
+            <button onClick={handleFetchNews} disabled={fetching}>
+              {fetching ? "Fetching…" : "Fetch news"}
+            </button>
+          </div>
         </header>
-
-        <div className="fetch-control">
-          <span className="fetch-status">
-            {fetching
-              ? "Fetching…"
-              : (fetchStatus ?? "Pulls fresh articles, then re-scores every topic.")}
-          </span>
-          <button onClick={handleFetchNews} disabled={fetching}>
-            {fetching ? "Fetching…" : "Fetch news"}
-          </button>
-        </div>
 
         <section className="add-topic">
           <h2>Add a topic</h2>
