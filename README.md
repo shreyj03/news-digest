@@ -12,7 +12,7 @@ A personal daily news digest: tell it what topics you care about, and each morni
 - **Live stock tickers** — a sidebar with real-time prices and a 7-day sparkline (via Yahoo Finance) for symbols you add or remove.
 - **Password-gated editing** — viewing the feed is open to anyone with the link; adding, editing, or deleting topics/tickers requires unlocking with a site password.
 - **7-day history** — date pills above the feed let you look back at exactly what matched on any of the last 7 days, not just today.
-- **"Why did this match"** — hover an article's signal meter to see which of the topic's keywords actually hit.
+- **"Why did this match"** — click (or tap, on mobile) an article's signal meter to see which of the topic's keywords actually hit.
 
 See [plan.md](./plan.md) for the original architecture and build order, and [DECISIONS.md](./DECISIONS.md) for why things were actually built the way they were — including several points where the build ended up deviating from that original plan.
 

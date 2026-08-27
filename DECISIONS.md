@@ -4,6 +4,14 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-27 — Match-reason tooltip switched from hover-only to click/tap
+
+**Decision:** The signal meter's "why did this match" info was shipped as a native `title` attribute (hover tooltip). User reported not seeing it. Root cause: native `title` tooltips need a real motionless hover (~1s) to appear, and don't exist at all on touch devices — no hover state on mobile means no tooltip, ever. Rebuilt `SignalMeter` as a real `<button>` with local `open` state: clicking/tapping toggles a visible caption rendered directly in the page (dark chip, positioned under the meter), which works identically on mouse and touch. Kept the `title` attribute too, as a free bonus for anyone who does hover with a mouse.
+**Why:** confirmed live — the deployed DOM already had the correct `title` attribute (checked directly via Playwright before assuming anything was broken), so this wasn't a deploy bug, it was the interaction model itself being unreliable on the device the user actually checked from.
+**Alternatives considered:**
+- A custom hover-triggered tooltip (CSS `:hover` + `visibility`) — rejected, same fundamental problem: still invisible on touch devices, the most likely culprit
+- `alert()`/native dialog on click — rejected, blocks the page and is a worse interaction than an inline caption
+
 ## 2026-08-27 — Five post-launch improvements: sparklines, source cap, match reasons, 7-day history, email scaffold
 
 **Decision:** Added, in one pass:

@@ -19,6 +19,11 @@ services:
         sync: false
       - key: DIGEST_EMAIL_TO
         sync: false
+      # Optional — the link the digest email points back to. Defaults to
+      # this project's own deployed frontend URL if unset; set this when
+      # redeploying to your own accounts so the email links to your site.
+      - key: SITE_URL
+        sync: false
 
   - type: web
     name: news-digest-web

@@ -465,7 +465,31 @@ body {
 .meter {
   flex-shrink: 0;
   width: 2.4rem;
-  padding-top: 0.25rem;
+  padding: 0.25rem 0 0;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  position: relative;
+}
+
+.meter-why {
+  display: block;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1;
+  width: max-content;
+  max-width: 12rem;
+  margin-top: 0.3rem;
+  padding: 0.35rem 0.5rem;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  line-height: 1.4;
+  white-space: normal;
 }
 
 .meter-bars {

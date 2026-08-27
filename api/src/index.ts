@@ -150,11 +150,19 @@ async function sendDigestEmail(): Promise<void> {
       })
       .join("");
 
+    const siteUrl = process.env.SITE_URL ?? "https://news-digest-web.onrender.com";
+
     const html = `<div style="font-family:Georgia,serif;max-width:600px;margin:0 auto;padding:24px;">
-      <h1 style="text-align:center;font-size:28px;margin-bottom:4px;">News Digest</h1>
+      <h1 style="text-align:center;font-size:28px;margin-bottom:4px;">
+        <a href="${siteUrl}" style="color:#1a1a18;text-decoration:none;">News Digest</a>
+      </h1>
       <p style="text-align:center;color:#746b58;font-style:italic;margin-top:0;">${dateLabel}</p>
       <hr style="border:none;border-top:3px solid #1a1a18;margin:16px 0;" />
       ${sections}
+      <hr style="border:none;border-top:1px solid #ded2b0;margin:16px 0;" />
+      <p style="text-align:center;">
+        <a href="${siteUrl}" style="color:#a3202f;text-decoration:none;font-size:13px;">View full digest, manage topics, and more →</a>
+      </p>
     </div>`;
 
     const res = await fetch("https://api.resend.com/emails", {

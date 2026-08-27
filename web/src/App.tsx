@@ -98,16 +98,23 @@ function SignalMeter({
   topScore: number;
   matched: string[];
 }) {
+  // A native `title` tooltip needs a real motionless hover to appear and
+  // doesn't exist at all on touch devices — click/tap is the only reliable
+  // way to reveal this on every device, so that's the primary interaction;
+  // `title` stays on as a bonus for anyone who does hover with a mouse.
+  const [open, setOpen] = useState(false);
   const ratio = topScore > 0 ? score / topScore : 0;
   const lit = Math.max(1, Math.min(5, Math.round(ratio * 5)));
   const why = matched.length > 0 ? `Matched: ${matched.join(", ")}` : "No keyword matched directly";
 
   return (
-    <div
+    <button
+      type="button"
       className="meter"
-      role="img"
-      aria-label={`Match strength ${lit} of 5, score ${score.toFixed(2)}. ${why}.`}
+      aria-label={`Match strength ${lit} of 5, score ${score.toFixed(2)}. ${why}. Tap for details.`}
+      aria-expanded={open}
       title={why}
+      onClick={() => setOpen((v) => !v)}
     >
       <div className="meter-bars" aria-hidden="true">
         {[1, 2, 3, 4, 5].map((bar) => (
@@ -117,7 +124,12 @@ function SignalMeter({
       <span className="meter-score" aria-hidden="true">
         {score.toFixed(2)}
       </span>
-    </div>
+      {open && (
+        <span className="meter-why" aria-hidden="true">
+          {why}
+        </span>
+      )}
+    </button>
   );
 }
 
