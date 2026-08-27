@@ -40,11 +40,16 @@ npm run match    # scores every article against every topic via TF-IDF, word-bou
 
 Both are safe to re-run — `ingest` skips articles it's already stored, and `match` fully recomputes `topic_articles` each time (not an upsert), so a keyword edit or scoring change can't leave stale matches behind.
 
-## Deployed version (Milestone 6)
+## Deployed version (Milestone 6) — live
 
-Runs for free on [Render](https://render.com) (`render.yaml` blueprint — an API web service + a static frontend site), with [Neon](https://neon.tech) for Postgres and a GitHub Actions scheduled workflow (`.github/workflows/daily-fetch.yml`) triggering the same `/api/fetch` the button does, once daily before 7am Pacific. See DECISIONS.md for why this shape instead of plan.md's original node-cron/EventBridge sketch.
+- Frontend: https://news-digest-web.onrender.com
+- API: https://news-digest-api-a1q4.onrender.com
 
-**One-time setup:**
+Runs for free on [Render](https://render.com) (`render.yaml` blueprint — an API web service + a static frontend site), with [Neon](https://neon.tech) for Postgres and a GitHub Actions scheduled workflow (`.github/workflows/daily-fetch.yml`) triggering the same `/api/fetch` the button does, once daily before 7am Pacific. See DECISIONS.md for why this shape instead of plan.md's original node-cron/EventBridge sketch, and for how it was actually deployed (via the Render and Neon MCP servers rather than by hand).
+
+Editing is gated behind a site password — click "Unlock to edit" and enter it (value lives in Render's env vars, not in this repo). Viewing the feed needs no password.
+
+**To redeploy this to your own accounts:**
 
 1. Create a free [Neon](https://neon.tech) project, copy its Postgres connection string, and apply `db/schema.sql` (and `db/seed.sql` if you want the starting topics) against it.
 2. In Render: **New → Blueprint**, point at this GitHub repo, deploy. Fill in the env vars it prompts for:
