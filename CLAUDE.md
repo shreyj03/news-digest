@@ -3,7 +3,7 @@
 A website where you add topics and each morning it fetches and shows fresh articles matched to those topics.
 
 **Stack:** React/TypeScript/Vite frontend (`web/`), Express/TypeScript API (`api/`), standalone ingestion script (`ingest/`), Postgres (`db/`).
-**Status:** Milestone 5 (topic management) complete — the feed page now supports add/edit/delete of topics directly from the UI (`POST/PUT/DELETE /api/topics`), no more editing Postgres by hand. Editing is inline on each topic card; delete requires two clicks (no native confirm dialogs — see DECISIONS.md). Verified end-to-end with Playwright. Milestone 6 (scheduling ingestion/matching via node-cron locally, EventBridge+Lambda deployed) is next.
+**Status:** Milestone 5 (topic management) complete, plus a real visual design pass — the feed page now supports add/edit/delete of topics directly from the UI, and has an actual design system (dark "desk" background, parchment topic cards, Newsreader/Inter/IBM Plex Mono type, a normalized signal-meter for match score instead of a bare decimal, progressive disclosure past 8 articles). See DECISIONS.md for the design rationale. Milestone 6 (scheduling ingestion/matching via node-cron locally, EventBridge+Lambda deployed) is next.
 
 See [plan.md](./plan.md) for the full build order, [DECISIONS.md](./DECISIONS.md) for why things were built the way they were, and [README.md](./README.md) for how to run it locally.
 

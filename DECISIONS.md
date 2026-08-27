@@ -4,6 +4,17 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-27 — Real visual design pass: "briefing on a desk" concept
+
+**Decision:** Replaced the plain unstyled boxes with an actual design system (via the `frontend-design` plugin skill): a dark neutral page background acting as a "desk," with each topic rendered as a warm parchment "briefing sheet" resting on it. Typography: Newsreader (serif) for topic names and article headlines, Inter for UI controls, IBM Plex Mono for metadata (source/date/keywords) and the score readout — chosen deliberately to avoid the three most common AI-generated-design defaults (cream+terracotta, near-black+neon, newspaper-hairline-broadsheet). The article's TF-IDF score, previously shown as a bare decimal, is now also rendered as a 5-bar "signal meter" normalized against the top-scoring article in that topic, with the raw number kept alongside for anyone who wants it — a bare float doesn't communicate match strength at a glance, and the meter does.
+**Why:** The brief is a personal tool read every morning, not a marketing page, so the "hero" is the masthead showing today's date (grounds the product's actual premise — "each morning it fetches...") rather than an oversized banner. Also added progressive disclosure (8 articles shown per topic by default, "Show N more" to expand) after seeing the first pass render all 30 as one undifferentiated wall of rows — undermined the "digest" concept the scoring/capping work in Milestones 3–4 was already built around.
+**Alternatives considered:**
+- Reusing one of the three flagged generic AI-design defaults — rejected per the design skill's own guidance; a personal daily-use tool benefits more from a concept tied to its actual subject (a briefing/dispatch) than a trendy template
+- Showing all 30 articles per topic with no disclosure control — rejected after the first screenshot made the scannability problem obvious
+- A generic rounded progress-bar for score — rejected in favor of discrete signal bars, which read as "signal strength" rather than "loading progress" and don't imply a percentage-of-completion the score isn't
+**Verified via Playwright**: full-page screenshots at desktop and 390px mobile widths, plus the inline edit-form state — confirmed responsive stacking, aria-labeled signal meters, and that `Cancel` correctly discards an edit-in-progress.
+**Aside:** while reviewing the live app, noticed `US Immigration Law`'s keywords in the database no longer match the Milestone 1 seed (now `immigration, visa, USCIS, F1, H-1B, OPT` instead of the original set including `green card`/`asylum`/`deportation`) — Milestone 5's edit feature is live at `localhost:5173` outside of any Claude Code session, so this looks like a real edit made through the app itself rather than a bug; left as-is rather than overwritten.
+
 ## 2026-08-27 — Topic management: inline edit/delete on the feed page, no native confirm dialogs
 
 **Decision:** Milestone 5's add/edit/delete UI lives directly on the existing feed page (no separate route/page — there's no router yet). Editing a topic swaps its card into inline text inputs with Save/Cancel; deleting requires two clicks (first click turns the button into "Confirm delete" + a Cancel button, second click actually deletes) instead of a native `window.confirm()`.

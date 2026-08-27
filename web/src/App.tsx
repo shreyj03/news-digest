@@ -31,6 +31,46 @@ async function readErrorMessage(res: Response, fallback: string): Promise<string
   return body?.error ?? fallback;
 }
 
+// Show the strongest matches first; the rest are a click away rather than
+// dumped in one wall of rows — a digest should read like one, even when the
+// API is holding up to 30 per topic.
+const VISIBLE_ARTICLES = 8;
+
+const todayLabel = new Date().toLocaleDateString(undefined, {
+  weekday: "long",
+  month: "long",
+  day: "numeric",
+  year: "numeric",
+});
+
+/**
+ * Match strength, normalized against the best-scoring article in the same
+ * topic. A raw TF-IDF float doesn't mean anything on its own — this turns it
+ * into something scannable, while the exact score stays visible underneath
+ * for anyone who wants it.
+ */
+function SignalMeter({ score, topScore }: { score: number; topScore: number }) {
+  const ratio = topScore > 0 ? score / topScore : 0;
+  const lit = Math.max(1, Math.min(5, Math.round(ratio * 5)));
+
+  return (
+    <div
+      className="meter"
+      role="img"
+      aria-label={`Match strength ${lit} of 5, score ${score.toFixed(2)}`}
+    >
+      <div className="meter-bars" aria-hidden="true">
+        {[1, 2, 3, 4, 5].map((bar) => (
+          <span key={bar} className={bar <= lit ? "lit" : ""} />
+        ))}
+      </div>
+      <span className="meter-score" aria-hidden="true">
+        {score.toFixed(2)}
+      </span>
+    </div>
+  );
+}
+
 function App() {
   const [feed, setFeed] = useState<TopicFeed[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -40,6 +80,7 @@ function App() {
   const [editKeywords, setEditKeywords] = useState("");
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [expandedTopics, setExpandedTopics] = useState<Set<number>>(new Set());
 
   const [newName, setNewName] = useState("");
   const [newKeywords, setNewKeywords] = useState("");
@@ -95,6 +136,15 @@ function App() {
     setEditingId(null);
   }
 
+  function toggleExpanded(id: number) {
+    setExpandedTopics((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   async function saveEdit(id: number) {
     const name = editName.trim();
     if (!name) return;
@@ -133,75 +183,98 @@ function App() {
 
   return (
     <main>
-      <h1>News Digest</h1>
-      {error && <p className="error">{error}</p>}
+      <header className="masthead">
+        <h1>News Digest</h1>
+        <span className="date">{todayLabel}</span>
+      </header>
 
-      {feed.map((topic) => (
-        <section key={topic.id} className="topic">
-          {editingId === topic.id ? (
-            <div className="edit-form">
-              <input
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                placeholder="Topic name"
-              />
-              <input
-                value={editKeywords}
-                onChange={(e) => setEditKeywords(e.target.value)}
-                placeholder="Keywords, comma separated"
-              />
-              <div className="topic-actions">
-                <button onClick={() => saveEdit(topic.id)}>Save</button>
-                <button onClick={cancelEdit} className="secondary">
-                  Cancel
-                </button>
+      {error && <p className="page-error">{error}</p>}
+
+      {feed.map((topic) => {
+        const topScore = topic.articles.reduce((max, a) => Math.max(max, a.score), 0);
+        const expanded = expandedTopics.has(topic.id);
+        const visibleArticles = expanded
+          ? topic.articles
+          : topic.articles.slice(0, VISIBLE_ARTICLES);
+        const hiddenCount = topic.articles.length - visibleArticles.length;
+
+        return (
+          <section key={topic.id} className="topic">
+            {editingId === topic.id ? (
+              <div className="edit-form">
+                <input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="Topic name"
+                />
+                <input
+                  value={editKeywords}
+                  onChange={(e) => setEditKeywords(e.target.value)}
+                  placeholder="Keywords, comma separated"
+                />
+                <div className="topic-actions">
+                  <button onClick={() => saveEdit(topic.id)}>Save</button>
+                  <button onClick={cancelEdit}>Cancel</button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="topic-header">
-              <div>
-                <h2>{topic.name}</h2>
-                <p className="keywords">{topic.keywords.join(", ")}</p>
+            ) : (
+              <div className="topic-header">
+                <div>
+                  <h2>{topic.name}</h2>
+                  <p className="keywords">
+                    {topic.keywords.join(" · ")}
+                    {topic.articles.length > 0 && (
+                      <span className="count"> — {topic.articles.length} matched</span>
+                    )}
+                  </p>
+                </div>
+                <div className="topic-actions">
+                  <button onClick={() => startEdit(topic)}>Edit</button>
+                  <button onClick={() => handleDeleteClick(topic.id)} className="danger">
+                    {confirmDeleteId === topic.id ? "Confirm delete" : "Delete"}
+                  </button>
+                  {confirmDeleteId === topic.id && (
+                    <button onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                  )}
+                </div>
               </div>
-              <div className="topic-actions">
-                <button onClick={() => startEdit(topic)} className="secondary">
-                  Edit
-                </button>
-                <button onClick={() => handleDeleteClick(topic.id)} className="danger">
-                  {confirmDeleteId === topic.id ? "Confirm delete" : "Delete"}
-                </button>
-                {confirmDeleteId === topic.id && (
-                  <button onClick={() => setConfirmDeleteId(null)} className="secondary">
-                    Cancel
+            )}
+
+            {topic.articles.length === 0 ? (
+              <p className="empty">
+                No matches yet. Run ingestion and matching to fill this in.
+              </p>
+            ) : (
+              <>
+                <ul className="articles">
+                  {visibleArticles.map((article) => (
+                    <li key={article.id}>
+                      <SignalMeter score={article.score} topScore={topScore} />
+                      <div className="article-body">
+                        <a href={article.url} target="_blank" rel="noreferrer">
+                          {article.title}
+                        </a>
+                        <div className="meta">
+                          {article.source ?? "Unknown source"}
+                          {article.published_at &&
+                            ` · ${new Date(article.published_at).toLocaleDateString()}`}
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                {(hiddenCount > 0 || expanded) && topic.articles.length > VISIBLE_ARTICLES && (
+                  <button className="show-more" onClick={() => toggleExpanded(topic.id)}>
+                    {expanded ? "Show fewer" : `Show ${hiddenCount} more`}
                   </button>
                 )}
-              </div>
-            </div>
-          )}
+              </>
+            )}
+          </section>
+        );
+      })}
 
-          {topic.articles.length === 0 ? (
-            <p className="empty">No matching articles yet.</p>
-          ) : (
-            <ul className="articles">
-              {topic.articles.map((article) => (
-                <li key={article.id}>
-                  <a href={article.url} target="_blank" rel="noreferrer">
-                    {article.title}
-                  </a>
-                  <div className="meta">
-                    {article.source ?? "Unknown source"}
-                    {article.published_at &&
-                      ` · ${new Date(article.published_at).toLocaleDateString()}`}
-                    {` · score ${article.score.toFixed(2)}`}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      ))}
-
-      <section className="topic add-topic">
+      <section className="add-topic">
         <h2>Add a topic</h2>
         <form onSubmit={handleAddTopic}>
           <input
@@ -214,12 +287,11 @@ function App() {
             onChange={(e) => setNewKeywords(e.target.value)}
             placeholder="Keywords, comma separated"
           />
+          <button type="submit">Add topic</button>
           {formError && <p className="error">{formError}</p>}
-          <button type="submit">Add Topic</button>
         </form>
         <p className="hint">
-          New topics won't show matched articles until ingestion and matching
-          are run again.
+          New topics stay empty until ingestion and matching run again.
         </p>
       </section>
     </main>
