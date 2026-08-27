@@ -12,6 +12,11 @@ A running log of non-trivial technical decisions for this project: what was chos
 - A custom hover-triggered tooltip (CSS `:hover` + `visibility`) — rejected, same fundamental problem: still invisible on touch devices, the most likely culprit
 - `alert()`/native dialog on click — rejected, blocks the page and is a worse interaction than an inline caption
 
+## 2026-08-27 — Match-reason click: made exclusive/dismissible, kept native hover
+
+**Decision:** Follow-up to the entry above. User reported the click-toggle caption "just stays there" once opened, and that hover still has its usual ~1s native delay (expected, not a bug — they explicitly said to leave hover as-is). Root cause of the "stays there" complaint: `open` state lived locally in each `SignalMeter`, so nothing closed one caption when another was opened, and nothing closed it on an outside click. Fixed by lifting the open/closed state up to `App` as a single `openMatchId: number | null` (only one article's caption can be open at a time) plus a document-level click listener that closes it on any click outside a meter (`e.stopPropagation()` on the meter button itself so its own click doesn't immediately re-trigger the outside-click handler). The native `title` attribute stays exactly as before — hover was never the problem, only the click behavior was.
+**Why:** verified via Playwright against local dev: clicking meter 1 opens its caption; clicking meter 2 closes meter 1's and opens meter 2's; clicking anywhere else on the page closes whatever is open. Confirmed `title` is still present on the button (`getAttribute('title')` returns the match text) so hover still works independently of the click state.
+
 ## 2026-08-27 — Five post-launch improvements: sparklines, source cap, match reasons, 7-day history, email scaffold
 
 **Decision:** Added, in one pass:

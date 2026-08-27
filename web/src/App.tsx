@@ -93,16 +93,19 @@ function SignalMeter({
   score,
   topScore,
   matched,
+  isOpen,
+  onToggle,
 }: {
   score: number;
   topScore: number;
   matched: string[];
+  isOpen: boolean;
+  onToggle: () => void;
 }) {
-  // A native `title` tooltip needs a real motionless hover to appear and
-  // doesn't exist at all on touch devices — click/tap is the only reliable
-  // way to reveal this on every device, so that's the primary interaction;
-  // `title` stays on as a bonus for anyone who does hover with a mouse.
-  const [open, setOpen] = useState(false);
+  // Native `title` hover is kept (slow, but still useful on desktop) *and*
+  // click/tap toggles a caption open for touch devices where hover doesn't
+  // exist at all. Open state is owned by the parent (see openMatchId) so opening
+  // one closes any other, and a click anywhere else closes it too.
   const ratio = topScore > 0 ? score / topScore : 0;
   const lit = Math.max(1, Math.min(5, Math.round(ratio * 5)));
   const why = matched.length > 0 ? `Matched: ${matched.join(", ")}` : "No keyword matched directly";
@@ -111,10 +114,13 @@ function SignalMeter({
     <button
       type="button"
       className="meter"
-      aria-label={`Match strength ${lit} of 5, score ${score.toFixed(2)}. ${why}. Tap for details.`}
-      aria-expanded={open}
       title={why}
-      onClick={() => setOpen((v) => !v)}
+      aria-label={`Match strength ${lit} of 5, score ${score.toFixed(2)}. ${why}. Tap for details.`}
+      aria-expanded={isOpen}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
     >
       <div className="meter-bars" aria-hidden="true">
         {[1, 2, 3, 4, 5].map((bar) => (
@@ -124,7 +130,7 @@ function SignalMeter({
       <span className="meter-score" aria-hidden="true">
         {score.toFixed(2)}
       </span>
-      {open && (
+      {isOpen && (
         <span className="meter-why" aria-hidden="true">
           {why}
         </span>
@@ -227,6 +233,16 @@ function App() {
   // YYYY-MM-DD shows exactly that day with no fallback (see /api/feed).
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const dateOptions = lastSevenDays();
+
+  // Which article's "why did this match" caption is open, if any — owned
+  // here (not locally in SignalMeter) so opening one closes any other, and
+  // any click outside a meter closes it too.
+  const [openMatchId, setOpenMatchId] = useState<number | null>(null);
+  useEffect(() => {
+    const closeOnOutsideClick = () => setOpenMatchId(null);
+    document.addEventListener("click", closeOnOutsideClick);
+    return () => document.removeEventListener("click", closeOnOutsideClick);
+  }, []);
 
   // Site password — only meaningful once deployed with SITE_PASSWORD set;
   // /api/auth is a no-op success locally, so this stays effectively unused
@@ -664,7 +680,15 @@ function App() {
                     <ul className="articles">
                       {visibleArticles.map((article) => (
                         <li key={article.id}>
-                          <SignalMeter score={article.score} topScore={topScore} matched={article.matched} />
+                          <SignalMeter
+                            score={article.score}
+                            topScore={topScore}
+                            matched={article.matched}
+                            isOpen={openMatchId === article.id}
+                            onToggle={() =>
+                              setOpenMatchId((current) => (current === article.id ? null : article.id))
+                            }
+                          />
                           <div className="article-body">
                             <a href={article.url} target="_blank" rel="noreferrer">
                               {article.title}
