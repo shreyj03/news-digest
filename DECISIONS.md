@@ -4,6 +4,15 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-27 — Two-column layout; feed scoped to today's articles only
+
+**Decision:** `/api/feed` now filters articles to `published_at::date = CURRENT_DATE` (server clock — UTC in local dev), on top of the existing per-topic cap and score ordering. The frontend lays out topic cards in a 2-column CSS grid (`main` widened to 1120px) above 860px, collapsing to 1 column below it; `align-items: start` so a short card doesn't stretch to match a taller neighbor in the same row.
+**Why:** direct user request — single column was wasting horizontal space, and the feed was showing every article ever matched (accumulating across every "Fetch news" run) rather than reading like an actual daily digest.
+**Alternatives considered:**
+- A "published in the last N hours" rolling window instead of calendar-day — rejected as more complex for no real benefit at personal-project scale; calendar-day matches the mental model of "today's digest" directly
+- A real per-user timezone setting — punted; plan.md already flagged "morning = fixed UTC or local time" as a decision to defer, and this filter uses the same server-clock assumption
+**Note:** articles without a `published_at` (RSS items with no pubDate) are excluded by this filter, same as they'd fail any date check — acceptable since "today's articles" can't be verified for them anyway.
+
 ## 2026-08-27 — Topics auto-manage their own feed; matching switched from substring to word-boundary
 
 **Decision:** `feeds` gained a nullable, unique `topic_id` column linking a feed to the topic it was auto-generated for. Creating a topic (`POST /api/topics`) now also inserts a Google News search feed for that topic's name (`Google News: <name>`) and immediately runs ingest+match; editing a topic's name (`PUT /api/topics/:id`) upserts that feed's query to match and re-fetches. Deleting a topic cascades its feed via the FK, same as `topic_articles` already did. `topic_id` is nullable so a manually-curated feed (e.g. a real publisher's own feed added later) isn't forced into this 1:1 shape.

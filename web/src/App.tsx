@@ -245,93 +245,93 @@ function App() {
 
       {error && <p className="page-error">{error}</p>}
 
-      {feed.map((topic) => {
-        const topScore = topic.articles.reduce((max, a) => Math.max(max, a.score), 0);
-        const expanded = expandedTopics.has(topic.id);
-        const visibleArticles = expanded
-          ? topic.articles
-          : topic.articles.slice(0, VISIBLE_ARTICLES);
-        const hiddenCount = topic.articles.length - visibleArticles.length;
+      <div className="topics-grid">
+        {feed.map((topic) => {
+          const topScore = topic.articles.reduce((max, a) => Math.max(max, a.score), 0);
+          const expanded = expandedTopics.has(topic.id);
+          const visibleArticles = expanded
+            ? topic.articles
+            : topic.articles.slice(0, VISIBLE_ARTICLES);
+          const hiddenCount = topic.articles.length - visibleArticles.length;
 
-        return (
-          <section key={topic.id} className="topic">
-            {editingId === topic.id ? (
-              <div className="edit-form">
-                <input
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  placeholder="Topic name"
-                />
-                <input
-                  value={editKeywords}
-                  onChange={(e) => setEditKeywords(e.target.value)}
-                  placeholder="Keywords, comma separated"
-                />
-                <div className="topic-actions">
-                  <button onClick={() => saveEdit(topic.id)} disabled={savingEdit}>
-                    {savingEdit ? "Saving…" : "Save"}
-                  </button>
-                  <button onClick={cancelEdit} disabled={savingEdit}>
-                    Cancel
-                  </button>
+          return (
+            <section key={topic.id} className="topic">
+              {editingId === topic.id ? (
+                <div className="edit-form">
+                  <input
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    placeholder="Topic name"
+                  />
+                  <input
+                    value={editKeywords}
+                    onChange={(e) => setEditKeywords(e.target.value)}
+                    placeholder="Keywords, comma separated"
+                  />
+                  <div className="topic-actions">
+                    <button onClick={() => saveEdit(topic.id)} disabled={savingEdit}>
+                      {savingEdit ? "Saving…" : "Save"}
+                    </button>
+                    <button onClick={cancelEdit} disabled={savingEdit}>
+                      Cancel
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <div className="topic-header">
-                <div>
-                  <h2>{topic.name}</h2>
-                  <p className="keywords">
-                    {topic.keywords.join(" · ")}
-                    {topic.articles.length > 0 && (
-                      <span className="count"> — {topic.articles.length} matched</span>
+              ) : (
+                <div className="topic-header">
+                  <div>
+                    <h2>{topic.name}</h2>
+                    <p className="keywords">
+                      {topic.keywords.join(" · ")}
+                      {topic.articles.length > 0 && (
+                        <span className="count"> — {topic.articles.length} matched</span>
+                      )}
+                    </p>
+                  </div>
+                  <div className="topic-actions">
+                    <button onClick={() => startEdit(topic)}>Edit</button>
+                    <button onClick={() => handleDeleteClick(topic.id)} className="danger">
+                      {confirmDeleteId === topic.id ? "Confirm delete" : "Delete"}
+                    </button>
+                    {confirmDeleteId === topic.id && (
+                      <button onClick={() => setConfirmDeleteId(null)}>Cancel</button>
                     )}
-                  </p>
+                  </div>
                 </div>
-                <div className="topic-actions">
-                  <button onClick={() => startEdit(topic)}>Edit</button>
-                  <button onClick={() => handleDeleteClick(topic.id)} className="danger">
-                    {confirmDeleteId === topic.id ? "Confirm delete" : "Delete"}
-                  </button>
-                  {confirmDeleteId === topic.id && (
-                    <button onClick={() => setConfirmDeleteId(null)}>Cancel</button>
-                  )}
-                </div>
-              </div>
-            )}
+              )}
 
-            {topic.articles.length === 0 ? (
-              <p className="empty">
-                No matches yet. Run ingestion and matching to fill this in.
-              </p>
-            ) : (
-              <>
-                <ul className="articles">
-                  {visibleArticles.map((article) => (
-                    <li key={article.id}>
-                      <SignalMeter score={article.score} topScore={topScore} />
-                      <div className="article-body">
-                        <a href={article.url} target="_blank" rel="noreferrer">
-                          {article.title}
-                        </a>
-                        <div className="meta">
-                          {article.source ?? "Unknown source"}
-                          {article.published_at &&
-                            ` · ${new Date(article.published_at).toLocaleDateString()}`}
+              {topic.articles.length === 0 ? (
+                <p className="empty">No matches today yet. Try "Fetch news".</p>
+              ) : (
+                <>
+                  <ul className="articles">
+                    {visibleArticles.map((article) => (
+                      <li key={article.id}>
+                        <SignalMeter score={article.score} topScore={topScore} />
+                        <div className="article-body">
+                          <a href={article.url} target="_blank" rel="noreferrer">
+                            {article.title}
+                          </a>
+                          <div className="meta">
+                            {article.source ?? "Unknown source"}
+                            {article.published_at &&
+                              ` · ${new Date(article.published_at).toLocaleDateString()}`}
+                          </div>
                         </div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-                {(hiddenCount > 0 || expanded) && topic.articles.length > VISIBLE_ARTICLES && (
-                  <button className="show-more" onClick={() => toggleExpanded(topic.id)}>
-                    {expanded ? "Show fewer" : `Show ${hiddenCount} more`}
-                  </button>
-                )}
-              </>
-            )}
-          </section>
-        );
-      })}
+                      </li>
+                    ))}
+                  </ul>
+                  {(hiddenCount > 0 || expanded) && topic.articles.length > VISIBLE_ARTICLES && (
+                    <button className="show-more" onClick={() => toggleExpanded(topic.id)}>
+                      {expanded ? "Show fewer" : `Show ${hiddenCount} more`}
+                    </button>
+                  )}
+                </>
+              )}
+            </section>
+          );
+        })}
+      </div>
 
       <section className="add-topic">
         <h2>Add a topic</h2>

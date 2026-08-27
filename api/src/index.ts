@@ -226,11 +226,14 @@ app.get(
 
     const feed = await Promise.all(
       topics.map(async (topic) => {
+        // "Today" per the server's clock (UTC in local dev) — matches
+        // plan.md's punted decision to not deal with per-user timezones yet.
         const { rows: articles } = await pool.query(
           `SELECT a.id, a.title, a.url, a.source, a.published_at, ta.score
            FROM topic_articles ta
            JOIN articles a ON a.id = ta.article_id
            WHERE ta.topic_id = $1
+             AND a.published_at::date = CURRENT_DATE
            ORDER BY ta.score DESC
            LIMIT $2`,
           [topic.id, ARTICLES_PER_TOPIC]
