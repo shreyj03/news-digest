@@ -34,7 +34,7 @@ async function readErrorMessage(res: Response, fallback: string): Promise<string
 // Show the strongest matches first; the rest are a click away rather than
 // dumped in one wall of rows — a digest should read like one, even when the
 // API is holding up to 30 per topic.
-const VISIBLE_ARTICLES = 8;
+const VISIBLE_ARTICLES = 5;
 
 const todayLabel = new Date().toLocaleDateString(undefined, {
   weekday: "long",
@@ -86,6 +86,9 @@ function App() {
   const [newKeywords, setNewKeywords] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
 
+  const [fetching, setFetching] = useState(false);
+  const [fetchStatus, setFetchStatus] = useState<string | null>(null);
+
   function loadFeed() {
     fetch(`${API_BASE}/api/feed`)
       .then((res) => {
@@ -134,6 +137,30 @@ function App() {
 
   function cancelEdit() {
     setEditingId(null);
+  }
+
+  async function handleFetchNews() {
+    setFetching(true);
+    setFetchStatus(null);
+    setError(null);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/fetch`, { method: "POST" });
+      const body = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        setError(body?.error ?? `Fetch failed (${res.status})`);
+        return;
+      }
+
+      const parts = [body?.ingest, body?.match].filter(Boolean);
+      setFetchStatus(parts.length > 0 ? parts.join(" — ") : "Fetch complete.");
+      loadFeed();
+    } catch {
+      setError("Fetch failed — is the API running?");
+    } finally {
+      setFetching(false);
+    }
   }
 
   function toggleExpanded(id: number) {
@@ -187,6 +214,17 @@ function App() {
         <h1>News Digest</h1>
         <span className="date">{todayLabel}</span>
       </header>
+
+      <div className="fetch-control">
+        <span className="fetch-status">
+          {fetching
+            ? "Fetching…"
+            : (fetchStatus ?? "Pulls fresh articles, then re-scores every topic.")}
+        </span>
+        <button onClick={handleFetchNews} disabled={fetching}>
+          {fetching ? "Fetching…" : "Fetch news"}
+        </button>
+      </div>
 
       {error && <p className="page-error">{error}</p>}
 

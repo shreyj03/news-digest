@@ -1,6 +1,17 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import cors from "cors";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { pool } from "./db.js";
+
+const execAsync = promisify(exec);
+// api/src -> api -> project root -> ingest. Resolved from this file's own
+// location rather than process.cwd() so it doesn't matter where `npm run
+// dev`/`tsx` was actually launched from.
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const INGEST_DIR = path.join(PROJECT_ROOT, "ingest");
 
 const app = express();
 const port = process.env.PORT ?? 3001;
@@ -149,6 +160,54 @@ app.get(
     );
 
     res.json(feed);
+  })
+);
+
+// Both scripts print a one-line summary as their last console.log — pull just
+// that out instead of relaying npm's banner lines and Node's ExperimentalWarning
+// noise to the UI.
+function lastMeaningfulLine(stdout: string): string {
+  const lines = stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0 &&
+        !line.startsWith(">") &&
+        !line.includes("ExperimentalWarning") &&
+        !line.includes("Support for loading") &&
+        !line.includes("trace-warnings")
+    );
+  return lines.at(-1) ?? "";
+}
+
+// Manual, on-demand version of what Milestone 2/3's scripts do by hand —
+// this route just shells out to the same `npm run ingest`/`npm run match`
+// commands a person would type, so the ingestion pipeline stays a separate
+// process from the web app rather than getting inlined into it.
+app.post(
+  "/api/fetch",
+  asyncRoute(async (_req, res) => {
+    try {
+      const ingestResult = await execAsync("npm run ingest", {
+        cwd: INGEST_DIR,
+        timeout: 60_000,
+      });
+      const matchResult = await execAsync("npm run match", {
+        cwd: INGEST_DIR,
+        timeout: 60_000,
+      });
+
+      res.json({
+        ok: true,
+        ingest: lastMeaningfulLine(ingestResult.stdout),
+        match: lastMeaningfulLine(matchResult.stdout),
+      });
+    } catch (err) {
+      const stderr = (err as { stderr?: string })?.stderr;
+      const message = stderr?.trim() || (err instanceof Error ? err.message : "Unknown error");
+      res.status(502).json({ error: `Fetch failed: ${message}` });
+    }
   })
 );
 

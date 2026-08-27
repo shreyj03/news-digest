@@ -101,6 +101,45 @@ main {
   white-space: nowrap;
 }
 
+.fetch-control {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.fetch-status {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--desk-muted);
+}
+
+.fetch-control button {
+  flex-shrink: 0;
+  font-family: var(--ui);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.4rem 0.85rem;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.fetch-control button:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--desk);
+}
+
+.fetch-control button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .page-error {
   font-family: var(--ui);
   color: #e2b3a8;
