@@ -4,13 +4,14 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
-## 2026-08-27 — Matching score is a raw keyword-hit count, not TF-IDF yet
+## 2026-08-27 — Matching score upgraded to TF-IDF
 
-**Decision:** `topic_articles.score` for Milestone 3 is the count of a topic's distinct keywords found (case-insensitive substring match) in an article's title + summary, not a TF-IDF or frequency-weighted score.
-**Why:** plan.md already calls for starting with plain keyword matching and only reaching for TF-IDF/embeddings if match quality is visibly bad in practice — a raw count is the simplest thing that produces a usable ranking signal (more distinct keyword hits = stronger match) with no corpus-wide statistics to compute yet.
+**Decision:** `topic_articles.score` is now a TF-IDF sum over a topic's keywords, not a raw keyword-hit count. For each keyword: term frequency is its occurrence count in an article's title+summary normalized by that article's word count (so a short title matching twice doesn't lose to a long article matching twice), and inverse document frequency is the smoothed `ln((N+1)/(df+1)) + 1` form (same shape scikit-learn defaults to), computed once per keyword across the whole ingested corpus. An article's score for a topic is the sum of `tf * idf` over that topic's keywords; articles with all-zero keyword hits still get no `topic_articles` row.
+**Why:** plan.md groups "keyword/TF-IDF" as one matching approach, and the raw-count version from the first pass had an obvious weakness once tested on real data — with 101 of 106 articles all containing the literal word "ETF" (unsurprising, since the seed feed *is* a Google News search for "ETF"), raw counting couldn't distinguish a strongly-on-topic article from one that mentions "ETF" once in passing. IDF down-weights that common term and up-weights rarer topic keywords (e.g. "expense ratio", "fund flows"), and length-normalized TF stops long articles from winning purely by having more words. Verified on the real corpus: the top-scoring article hits two keywords in a short title; the lowest-scoring one is a very long headline where "ETF" appears once.
 **Alternatives considered:**
-- Full TF-IDF scoring now — rejected as premature per plan.md's stated ordering; revisit once there's a large enough article corpus for term frequencies to mean anything
-- Binary match/no-match (score always 1) — rejected, throws away a very cheap ranking signal (articles hitting more keywords are usually more on-topic)
+- Keep the raw keyword-hit count — rejected once real data showed it couldn't discriminate strength of match, only presence/absence
+- Embeddings-based semantic matching — still deferred per plan.md; no evidence yet that TF-IDF's matches are wrong, just that raw counting's *ranking* was too coarse
+- Un-normalized TF (raw occurrence count, no division by document length) — rejected, would bias scores toward longer articles independent of actual relevance
 
 **Bug found and fixed while building this:** `topics` had no unique constraint on `name`, so re-running `db/seed.sql` (done once during Milestone 2 setup) silently inserted duplicate topic rows instead of the `ON CONFLICT DO NOTHING` skipping them — that clause had no conflict target to match against. Added `UNIQUE` on `topics.name` in `schema.sql`, pointed `seed.sql`'s `ON CONFLICT` at it explicitly, and deleted the duplicate rows (and their spurious `topic_articles` matches) from the running dev DB.
 

@@ -12,10 +12,18 @@ interface Article {
   summary: string | null;
 }
 
-function countKeywordHits(text: string, keywords: string[]): number {
-  const haystack = text.toLowerCase();
-  return keywords.filter((keyword) => haystack.includes(keyword.toLowerCase()))
-    .length;
+/** Count all occurrences of `needle` in `haystack` (both already lowercased). */
+function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let from = 0;
+  while (true) {
+    const found = haystack.indexOf(needle, from);
+    if (found === -1) break;
+    count++;
+    from = found + needle.length;
+  }
+  return count;
 }
 
 async function main() {
@@ -32,14 +40,64 @@ async function main() {
     return;
   }
 
+  const corpusSize = articles.length;
+
+  // Precompute each article's lowercased text and word count once.
+  const articleText = new Map<number, string>();
+  const articleWordCount = new Map<number, number>();
+  for (const article of articles) {
+    const text = `${article.title} ${article.summary ?? ""}`.toLowerCase();
+    articleText.set(article.id, text);
+    const wordCount = text.split(/\s+/).filter(Boolean).length;
+    articleWordCount.set(article.id, Math.max(wordCount, 1));
+  }
+
+  // Every distinct keyword across all topics, so df/idf is computed once per keyword
+  // even if two topics happen to share one.
+  const allKeywords = new Set<string>();
+  for (const topic of topics) {
+    for (const keyword of topic.keywords) allKeywords.add(keyword.toLowerCase());
+  }
+
+  // For each keyword: corpus-wide IDF, and per-article normalized TF.
+  const idfByKeyword = new Map<string, number>();
+  const tfByKeyword = new Map<string, Map<number, number>>();
+
+  for (const keyword of allKeywords) {
+    let documentFrequency = 0;
+    const tfForArticles = new Map<number, number>();
+
+    for (const article of articles) {
+      const text = articleText.get(article.id)!;
+      const rawCount = countOccurrences(text, keyword);
+      if (rawCount > 0) {
+        documentFrequency++;
+        // Term frequency, normalized by document length so short titles don't
+        // automatically outscore longer title+summary pairs.
+        tfForArticles.set(article.id, rawCount / articleWordCount.get(article.id)!);
+      }
+    }
+
+    // Smoothed IDF (as in scikit-learn's default): always positive, and never
+    // zero even for a keyword that appears in every single article.
+    const idf = Math.log((corpusSize + 1) / (documentFrequency + 1)) + 1;
+    idfByKeyword.set(keyword, idf);
+    tfByKeyword.set(keyword, tfForArticles);
+  }
+
   let totalMatches = 0;
   const perTopicCounts = new Map<number, number>();
 
-  for (const article of articles) {
-    const text = `${article.title} ${article.summary ?? ""}`;
+  for (const topic of topics) {
+    for (const article of articles) {
+      let score = 0;
+      for (const rawKeyword of topic.keywords) {
+        const keyword = rawKeyword.toLowerCase();
+        const tf = tfByKeyword.get(keyword)?.get(article.id) ?? 0;
+        if (tf === 0) continue;
+        score += tf * idfByKeyword.get(keyword)!;
+      }
 
-    for (const topic of topics) {
-      const score = countKeywordHits(text, topic.keywords);
       if (score === 0) continue;
 
       await pool.query(
@@ -55,7 +113,9 @@ async function main() {
     }
   }
 
-  console.log(`Matched ${articles.length} article(s) against ${topics.length} topic(s).`);
+  console.log(
+    `Matched ${articles.length} article(s) against ${topics.length} topic(s) using TF-IDF scoring.`
+  );
   for (const topic of topics) {
     console.log(`  ${topic.name}: ${perTopicCounts.get(topic.id) ?? 0} article(s) matched`);
   }

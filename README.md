@@ -38,7 +38,7 @@ To add another source, insert a row into `feeds` (`url`, `name`) — no code cha
 
 ## Running matching (Milestone 3)
 
-Keyword-matches every stored article against every topic's `keywords[]` and upserts scores into `topic_articles` (safe to re-run — re-matching just updates the score).
+Scores every stored article against every topic's `keywords[]` using TF-IDF (term frequency normalized by article length, weighted by each keyword's rarity across the ingested corpus) and upserts scores into `topic_articles` (safe to re-run — re-matching just recomputes and updates the score).
 
 ```
 cd ingest && npm run match
