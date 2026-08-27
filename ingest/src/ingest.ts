@@ -3,6 +3,21 @@ import { pool } from "./db.js";
 
 const parser = new Parser();
 
+// RSS titles from these feeds are conventionally "Headline - Outlet Name" —
+// strip the outlet suffix so the same story from two different outlets
+// normalizes to the same fingerprint instead of being treated as two
+// unrelated articles. Punctuation-insensitive on purpose: headlines for the
+// same story often differ in a stray comma or quote mark between outlets.
+function normalizeTitle(title: string): string {
+  const lastDash = title.lastIndexOf(" - ");
+  const withoutSource = lastDash > 0 ? title.slice(0, lastDash) : title;
+  return withoutSource
+    .toLowerCase()
+    .replace(/[^\w\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 async function main() {
   const { rows: feeds } = await pool.query<{
     id: number;
@@ -16,14 +31,44 @@ async function main() {
     return;
   }
 
+  // Cross-outlet dedup: the same story often runs under near-identical
+  // headlines across multiple sources (and sometimes across multiple feeds
+  // in this run). Track every normalized title already stored so only the
+  // first-seen version of a story gets inserted — everything already in
+  // `articles` counts too, not just this run.
+  const { rows: existing } = await pool.query<{ title: string }>("SELECT title FROM articles");
+  const seenTitles = new Set(existing.map((a) => normalizeTitle(a.title)));
+
   let totalInserted = 0;
+  let totalDuplicates = 0;
+  let feedsFailed = 0;
 
   for (const feed of feeds) {
     console.log(`Fetching feed: ${feed.name} (${feed.url})`);
-    const parsed = await parser.parseURL(feed.url);
+
+    // A single unreachable or malformed feed shouldn't take the rest of the
+    // run down with it — skip it and keep going.
+    let parsed;
+    try {
+      parsed = await parser.parseURL(feed.url);
+    } catch (err) {
+      feedsFailed++;
+      console.error(
+        `  Failed to fetch/parse this feed, skipping it: ${
+          err instanceof Error ? err.message : "Unknown error"
+        }`
+      );
+      continue;
+    }
 
     for (const item of parsed.items) {
       if (!item.link || !item.title) continue;
+
+      const normalized = normalizeTitle(item.title);
+      if (seenTitles.has(normalized)) {
+        totalDuplicates++;
+        continue;
+      }
 
       const result = await pool.query(
         `INSERT INTO articles (url, title, summary, source, published_at)
@@ -38,13 +83,19 @@ async function main() {
         ]
       );
 
-      if ((result.rowCount ?? 0) > 0) totalInserted++;
+      if ((result.rowCount ?? 0) > 0) {
+        totalInserted++;
+        seenTitles.add(normalized);
+      }
     }
 
     console.log(`  ${parsed.items.length} items seen in feed`);
   }
 
-  console.log(`Done. ${totalInserted} new article(s) inserted.`);
+  console.log(
+    `Done. ${totalInserted} new article(s) inserted, ${totalDuplicates} cross-outlet duplicate(s) skipped` +
+      (feedsFailed > 0 ? `, ${feedsFailed} feed(s) failed.` : ".")
+  );
   await pool.end();
 }
 

@@ -14,6 +14,8 @@ A website where you add topics and each morning it fetches and shows fresh artic
 
 Verified end-to-end live: both services deployed and responding, real DB read/write confirmed, GitHub Actions workflow manually triggered and confirmed it populates real articles, unauthenticated mutation confirmed 401, full unlock→add-topic→delete cycle exercised through the actual deployed UI via Playwright. Local dev is unaffected (all of the above is a no-op when the relevant env vars are unset).
 
+**Milestone 7 (Polish) — also complete.** `ingest.ts` now isolates per-feed failures (a broken feed is skipped and logged, not fatal to the whole run) and dedupes cross-outlet duplicate stories (title-normalized, outlet suffix stripped) — both gaps flagged when plan.md's final-architecture section was written, fixed the same day. Existing duplicates were also cleaned up retroactively on both the local DB (29 rows) and the live Neon database (15 rows, deleted only after explicit user confirmation).
+
 See [plan.md](./plan.md) — its "Final architecture (as deployed)" section at the top summarizes what's actually live, with the original pre-build plan kept below it for reference — [DECISIONS.md](./DECISIONS.md) for why things were built the way they were, and [README.md](./README.md) for how to run it locally.
 
 **Local dev note:** `.claude/settings.local.json` has a `SessionStart` hook that auto-starts the Postgres container, API, and frontend dev server if they're not already running — you shouldn't need to start them by hand unless that hook is missing or disabled.
