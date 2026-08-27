@@ -4,6 +4,14 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-27 — Uniform card height; fall back to recent matches when nothing's from today
+
+**Decision:** Dropped `align-items: start` from `.topics-grid`, so cards revert to CSS Grid's default `stretch` — both cards in a row now share that row's height, at the cost of blank space under a shorter card. Separately, `/api/feed` no longer just returns an empty list for a topic with nothing from today: it falls back to that topic's most recent matches (any date, ordered by `published_at DESC`), and flags the response with `stale: true` so the frontend can show "Nothing matched today — showing the most recent matches" instead of silently mixing dates in with no explanation, or showing a dead-looking empty card.
+**Why:** direct user request on both — uneven card heights read as broken/unfinished, and an empty OKLO card looked like a bug rather than "no fresh OKLO news today," which per this same session's earlier fix is genuinely possible now that the feed is date-filtered.
+**Alternatives considered:**
+- Keep `align-items: start` and just live with uneven cards — rejected, this was explicit feedback that it looked bad, not a case with two reasonable options
+- Silently fall back to older articles with no indication they aren't from today — rejected, would misrepresent the digest's "today" framing; the `stale` flag exists specifically so the UI can be honest about what it's showing
+
 ## 2026-08-27 — Two-column layout; feed scoped to today's articles only
 
 **Decision:** `/api/feed` now filters articles to `published_at::date = CURRENT_DATE` (server clock — UTC in local dev), on top of the existing per-topic cap and score ordering. The frontend lays out topic cards in a 2-column CSS grid (`main` widened to 1120px) above 860px, collapsing to 1 column below it; `align-items: start` so a short card doesn't stretch to match a taller neighbor in the same row.

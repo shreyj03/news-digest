@@ -228,7 +228,7 @@ app.get(
       topics.map(async (topic) => {
         // "Today" per the server's clock (UTC in local dev) — matches
         // plan.md's punted decision to not deal with per-user timezones yet.
-        const { rows: articles } = await pool.query(
+        const { rows: todayArticles } = await pool.query(
           `SELECT a.id, a.title, a.url, a.source, a.published_at, ta.score
            FROM topic_articles ta
            JOIN articles a ON a.id = ta.article_id
@@ -238,7 +238,25 @@ app.get(
            LIMIT $2`,
           [topic.id, ARTICLES_PER_TOPIC]
         );
-        return { ...topic, articles };
+
+        if (todayArticles.length > 0) {
+          return { ...topic, articles: todayArticles, stale: false };
+        }
+
+        // Nothing matched today — fall back to this topic's most recent
+        // matches regardless of date, newest first, rather than leaving the
+        // card empty. `stale` tells the frontend to label these as such.
+        const { rows: recentArticles } = await pool.query(
+          `SELECT a.id, a.title, a.url, a.source, a.published_at, ta.score
+           FROM topic_articles ta
+           JOIN articles a ON a.id = ta.article_id
+           WHERE ta.topic_id = $1
+           ORDER BY a.published_at DESC NULLS LAST
+           LIMIT $2`,
+          [topic.id, ARTICLES_PER_TOPIC]
+        );
+
+        return { ...topic, articles: recentArticles, stale: recentArticles.length > 0 };
       })
     );
 

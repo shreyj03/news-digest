@@ -17,6 +17,9 @@ interface TopicFeed {
   name: string;
   keywords: string[];
   articles: Article[];
+  // true when nothing matched today, so `articles` is a fallback of the
+  // topic's most recent matches (any date), newest first.
+  stale: boolean;
 }
 
 function parseKeywordsInput(input: string): string[] {
@@ -304,6 +307,9 @@ function App() {
                 <p className="empty">No matches today yet. Try "Fetch news".</p>
               ) : (
                 <>
+                  {topic.stale && (
+                    <p className="stale-note">Nothing matched today — showing the most recent matches.</p>
+                  )}
                   <ul className="articles">
                     {visibleArticles.map((article) => (
                       <li key={article.id}>
