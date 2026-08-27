@@ -3,7 +3,7 @@
 A website where you add topics and each morning it fetches and shows fresh articles matched to those topics.
 
 **Stack:** React/TypeScript/Vite frontend (`web/`), Express/TypeScript API (`api/`), standalone ingestion script (`ingest/`), Postgres (`db/`).
-**Status:** Milestone 2 (manual RSS ingestion) complete — `ingest/` pulls a Google News RSS feed (query: "ETF") and stores articles in Postgres, deduped by URL, run by hand via `npm run ingest`. 106 real articles ingested so far. Milestone 3 (keyword matching articles to topics) is next.
+**Status:** Milestone 3 (keyword matching) complete — `ingest/` now also has `npm run match`, which keyword-scores every article against every topic and upserts `topic_articles`. 101 of 106 ingested articles matched the "ETFs" topic; "US Immigration Law" has 0 matches so far since no immigration feed has been ingested yet. Milestone 4 (feed UI showing articles grouped by topic) is next.
 
 See [plan.md](./plan.md) for the full build order, [DECISIONS.md](./DECISIONS.md) for why things were built the way they were, and [README.md](./README.md) for how to run it locally.
 

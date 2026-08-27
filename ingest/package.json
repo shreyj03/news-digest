@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "ingest": "tsx src/ingest.ts",
+    "match": "tsx src/match.ts",
     "build": "tsc"
   },
   "dependencies": {

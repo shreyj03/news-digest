@@ -4,6 +4,16 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-27 — Matching score is a raw keyword-hit count, not TF-IDF yet
+
+**Decision:** `topic_articles.score` for Milestone 3 is the count of a topic's distinct keywords found (case-insensitive substring match) in an article's title + summary, not a TF-IDF or frequency-weighted score.
+**Why:** plan.md already calls for starting with plain keyword matching and only reaching for TF-IDF/embeddings if match quality is visibly bad in practice — a raw count is the simplest thing that produces a usable ranking signal (more distinct keyword hits = stronger match) with no corpus-wide statistics to compute yet.
+**Alternatives considered:**
+- Full TF-IDF scoring now — rejected as premature per plan.md's stated ordering; revisit once there's a large enough article corpus for term frequencies to mean anything
+- Binary match/no-match (score always 1) — rejected, throws away a very cheap ranking signal (articles hitting more keywords are usually more on-topic)
+
+**Bug found and fixed while building this:** `topics` had no unique constraint on `name`, so re-running `db/seed.sql` (done once during Milestone 2 setup) silently inserted duplicate topic rows instead of the `ON CONFLICT DO NOTHING` skipping them — that clause had no conflict target to match against. Added `UNIQUE` on `topics.name` in `schema.sql`, pointed `seed.sql`'s `ON CONFLICT` at it explicitly, and deleted the duplicate rows (and their spurious `topic_articles` matches) from the running dev DB.
+
 ## 2026-08-27 — First ingestion feed: Google News RSS query, not a single publisher feed
 
 **Decision:** Milestone 2's one RSS feed is a Google News search feed (`news.google.com/rss/search?q=ETF`) rather than a single outlet's own RSS feed (e.g. ETF.com directly).

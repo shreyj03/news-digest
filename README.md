@@ -35,3 +35,11 @@ cd ingest && npm install && npm run ingest
 ```
 
 To add another source, insert a row into `feeds` (`url`, `name`) — no code changes needed.
+
+## Running matching (Milestone 3)
+
+Keyword-matches every stored article against every topic's `keywords[]` and upserts scores into `topic_articles` (safe to re-run — re-matching just updates the score).
+
+```
+cd ingest && npm run match
+```
