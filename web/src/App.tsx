@@ -12,6 +12,7 @@ interface Article {
   source: string | null;
   published_at: string | null;
   score: number;
+  matched: string[];
 }
 
 interface TopicFeed {
@@ -29,6 +30,7 @@ interface Quote {
   change: number | null;
   changePercent: number | null;
   currency: string | null;
+  history: number[];
   error?: string;
 }
 
@@ -62,21 +64,50 @@ const todayLabel = new Date().toLocaleDateString(undefined, {
   year: "numeric",
 });
 
+// The last 7 days (today first), computed in UTC to match the server's own
+// "today" — see /api/feed's comment on why that's the operating definition.
+function lastSevenDays(): { value: string; label: string }[] {
+  const now = new Date();
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
+    const value = d.toISOString().slice(0, 10);
+    const label =
+      i === 0
+        ? "Today"
+        : i === 1
+          ? "Yesterday"
+          : d.toLocaleDateString(undefined, { weekday: "short", month: "numeric", day: "numeric", timeZone: "UTC" });
+    days.push({ value, label });
+  }
+  return days;
+}
+
 /**
  * Match strength, normalized against the best-scoring article in the same
  * topic. A raw TF-IDF float doesn't mean anything on its own — this turns it
  * into something scannable, while the exact score stays visible underneath
  * for anyone who wants it.
  */
-function SignalMeter({ score, topScore }: { score: number; topScore: number }) {
+function SignalMeter({
+  score,
+  topScore,
+  matched,
+}: {
+  score: number;
+  topScore: number;
+  matched: string[];
+}) {
   const ratio = topScore > 0 ? score / topScore : 0;
   const lit = Math.max(1, Math.min(5, Math.round(ratio * 5)));
+  const why = matched.length > 0 ? `Matched: ${matched.join(", ")}` : "No keyword matched directly";
 
   return (
     <div
       className="meter"
       role="img"
-      aria-label={`Match strength ${lit} of 5, score ${score.toFixed(2)}`}
+      aria-label={`Match strength ${lit} of 5, score ${score.toFixed(2)}. ${why}.`}
+      title={why}
     >
       <div className="meter-bars" aria-hidden="true">
         {[1, 2, 3, 4, 5].map((bar) => (
@@ -87,6 +118,39 @@ function SignalMeter({ score, topScore }: { score: number; topScore: number }) {
         {score.toFixed(2)}
       </span>
     </div>
+  );
+}
+
+// A tiny inline trend line — up to 7 daily closes, oldest first. Height and
+// color communicate direction at a glance; exact numbers stay in the price
+// line above it.
+function Sparkline({ history }: { history: number[] }) {
+  if (history.length < 2) return null;
+
+  const width = 60;
+  const height = 20;
+  const min = Math.min(...history);
+  const max = Math.max(...history);
+  const range = max - min || 1;
+  const points = history
+    .map((value, i) => {
+      const x = (i / (history.length - 1)) * width;
+      const y = height - ((value - min) / range) * height;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const isUp = history[history.length - 1] >= history[0];
+
+  return (
+    <svg
+      className={`sparkline ${isUp ? "up" : "down"}`}
+      viewBox={`0 0 ${width} ${height}`}
+      width={width}
+      height={height}
+      aria-hidden="true"
+    >
+      <polyline points={points} fill="none" strokeWidth="1.5" />
+    </svg>
   );
 }
 
@@ -114,6 +178,7 @@ function TickerRow({ ticker, onRemove }: { ticker: Ticker; onRemove: (id: number
           <span className={`ticker-change ${isUp ? "up" : "down"}`}>
             {isUp ? "▲" : "▼"} {Math.abs(quote.changePercent ?? 0).toFixed(2)}%
           </span>
+          <Sparkline history={quote.history} />
         </div>
       )}
     </div>
@@ -145,6 +210,11 @@ function App() {
   const [newTicker, setNewTicker] = useState("");
   const [tickerError, setTickerError] = useState<string | null>(null);
   const [addingTicker, setAddingTicker] = useState(false);
+
+  // null = today, with the server's own stale-fallback behavior. A specific
+  // YYYY-MM-DD shows exactly that day with no fallback (see /api/feed).
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const dateOptions = lastSevenDays();
 
   // Site password — only meaningful once deployed with SITE_PASSWORD set;
   // /api/auth is a no-op success locally, so this stays effectively unused
@@ -201,14 +271,22 @@ function App() {
     setSitePassword(null);
   }
 
-  function loadFeed() {
-    fetch(`${API_BASE}/api/feed`)
+  function loadFeed(date: string | null = selectedDate) {
+    const url = date ? `${API_BASE}/api/feed?date=${date}` : `${API_BASE}/api/feed`;
+    fetch(url)
       .then((res) => {
         if (!res.ok) throw new Error(`API returned ${res.status}`);
         return res.json();
       })
       .then(setFeed)
       .catch((err) => setError(err.message));
+  }
+
+  function selectDate(value: string) {
+    const isToday = value === dateOptions[0].value;
+    const next = isToday ? null : value;
+    setSelectedDate(next);
+    loadFeed(next);
   }
 
   function loadTickers() {
@@ -432,6 +510,21 @@ function App() {
               {fetching ? "Fetching…" : "Fetch news"}
             </button>
           </div>
+          <div className="date-picker">
+            {dateOptions.map((day) => {
+              const isToday = day.value === dateOptions[0].value;
+              const active = isToday ? selectedDate === null : selectedDate === day.value;
+              return (
+                <button
+                  key={day.value}
+                  className={active ? "active" : ""}
+                  onClick={() => selectDate(day.value)}
+                >
+                  {day.label}
+                </button>
+              );
+            })}
+          </div>
           <div className="auth-row">
             {sitePassword ? (
               <>
@@ -546,7 +639,9 @@ function App() {
                 )}
 
                 {topic.articles.length === 0 ? (
-                  <p className="empty">No matches today yet. Try "Fetch news".</p>
+                  <p className="empty">
+                    {selectedDate ? "No matches on this day." : 'No matches today yet. Try "Fetch news".'}
+                  </p>
                 ) : (
                   <>
                     {topic.stale && (
@@ -557,7 +652,7 @@ function App() {
                     <ul className="articles">
                       {visibleArticles.map((article) => (
                         <li key={article.id}>
-                          <SignalMeter score={article.score} topScore={topScore} />
+                          <SignalMeter score={article.score} topScore={topScore} matched={article.matched} />
                           <div className="article-body">
                             <a href={article.url} target="_blank" rel="noreferrer">
                               {article.title}

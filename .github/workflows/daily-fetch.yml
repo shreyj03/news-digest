@@ -15,8 +15,12 @@ jobs:
   fetch:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger ingest + match
+      - name: Trigger ingest + match, and send the digest email
+        # ?email=1 is what makes this the one caller that sends mail — the
+        # "Fetch news" button hits the same endpoint without it, so clicking
+        # that never spams the inbox. A no-op server-side until
+        # RESEND_API_KEY/DIGEST_EMAIL_TO are actually set on the API service.
         run: |
-          curl -sf -X POST "${{ secrets.API_URL }}/api/fetch" \
+          curl -sf -X POST "${{ secrets.API_URL }}/api/fetch?email=1" \
             -H "Authorization: Bearer ${{ secrets.FETCH_SECRET }}" \
             --max-time 120

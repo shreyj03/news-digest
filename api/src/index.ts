@@ -104,6 +104,78 @@ async function runIngestAndMatch(): Promise<{ ingest: string; match: string }> {
   };
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// Best-effort — a no-op when RESEND_API_KEY/DIGEST_EMAIL_TO aren't set (so
+// local dev and anyone who hasn't opted into email are unaffected), and
+// never throws: a failed email shouldn't turn a successful fetch into a
+// failed one. Only called from the scheduled workflow's /api/fetch?email=1,
+// not the manual "Fetch news" button, so clicking that button repeatedly
+// doesn't spam the inbox.
+async function sendDigestEmail(): Promise<void> {
+  const apiKey = process.env.RESEND_API_KEY;
+  const to = process.env.DIGEST_EMAIL_TO;
+  if (!apiKey || !to) return;
+
+  try {
+    const feed = await buildFeed(null);
+    const dateLabel = new Date().toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+      timeZone: "UTC",
+    });
+
+    const sections = feed
+      .map((topic) => {
+        const items = topic.articles
+          .slice(0, 5)
+          .map(
+            (a: { url: string; title: string; source: string | null }) =>
+              `<li style="margin-bottom:10px;"><a href="${a.url}" style="color:#1a1a18;text-decoration:none;font-weight:600;">${escapeHtml(a.title)}</a><br><span style="color:#746b58;font-size:12px;">${escapeHtml(a.source ?? "")}</span></li>`
+          )
+          .join("");
+        const body =
+          topic.articles.length > 0
+            ? `<ul style="list-style:none;padding:0;margin:8px 0 0;">${items}</ul>`
+            : `<p style="color:#746b58;font-style:italic;">No matches today.</p>`;
+        return `<div style="margin-bottom:24px;"><h2 style="font-family:Georgia,serif;font-size:18px;border-bottom:2px solid #1a1a18;padding-bottom:4px;margin:0 0 4px;">${escapeHtml(topic.name)}</h2>${body}</div>`;
+      })
+      .join("");
+
+    const html = `<div style="font-family:Georgia,serif;max-width:600px;margin:0 auto;padding:24px;">
+      <h1 style="text-align:center;font-size:28px;margin-bottom:4px;">News Digest</h1>
+      <p style="text-align:center;color:#746b58;font-style:italic;margin-top:0;">${dateLabel}</p>
+      <hr style="border:none;border-top:3px solid #1a1a18;margin:16px 0;" />
+      ${sections}
+    </div>`;
+
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: process.env.DIGEST_EMAIL_FROM ?? "News Digest <onboarding@resend.dev>",
+        to: [to],
+        subject: `News Digest — ${dateLabel}`,
+        html,
+      }),
+    });
+
+    if (!res.ok) {
+      console.error("Digest email failed:", res.status, await res.text().catch(() => ""));
+    }
+  } catch (err) {
+    console.error("Digest email failed:", err);
+  }
+}
+
 // Lets the frontend verify a password before storing it in localStorage,
 // rather than storing whatever was typed and finding out it's wrong on the
 // next mutating request.
@@ -264,51 +336,159 @@ app.delete(
 // Cap per-topic article count so an early-morning digest stays a digest,
 // not a dump of every article that ever matched.
 const ARTICLES_PER_TOPIC = 30;
+// No single outlet should be able to fill the whole digest — fetch more raw
+// candidates than we need so capping still leaves close to ARTICLES_PER_TOPIC.
+const MAX_PER_SOURCE = 3;
+const RAW_CANDIDATE_LIMIT = 150;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Recomputed at request time rather than stored — match.ts only keeps the
+// final summed score, not which keywords contributed to it. Same
+// word-boundary rule match.ts itself uses, so this always agrees with why a
+// score is what it is.
+function matchedKeywords(text: string, keywords: string[]): string[] {
+  const haystack = text.toLowerCase();
+  return keywords.filter((keyword) => {
+    const pattern = new RegExp(`\\b${escapeRegExp(keyword.toLowerCase())}\\b`);
+    return pattern.test(haystack);
+  });
+}
+
+// `articles.source` is the feed name (e.g. "Google News: ETF") — since a
+// topic typically has exactly one feed, every one of its articles shares
+// that same value, making it useless for outlet diversity. The actual
+// outlet lives in the title suffix instead (RSS titles from these feeds are
+// conventionally "Headline - Outlet"), same convention ingest.ts's own
+// dedup already relies on.
+function extractOutlet(title: string, fallback: string | null): string {
+  const lastDash = title.lastIndexOf(" - ");
+  return lastDash > 0 ? title.slice(lastDash + 3).trim() : (fallback ?? "");
+}
+
+function capBySource<T extends { title: string; source: string | null }>(
+  articles: T[],
+  cap: number,
+  limit: number
+): T[] {
+  const counts = new Map<string, number>();
+  const result: T[] = [];
+  for (const article of articles) {
+    const key = extractOutlet(article.title, article.source);
+    const count = counts.get(key) ?? 0;
+    if (count >= cap) continue;
+    counts.set(key, count + 1);
+    result.push(article);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+interface RawArticle {
+  id: number;
+  title: string;
+  url: string;
+  source: string | null;
+  summary: string | null;
+  published_at: string | null;
+  score: number;
+}
+
+function buildArticles(candidates: RawArticle[], keywords: string[]) {
+  return capBySource(candidates, MAX_PER_SOURCE, ARTICLES_PER_TOPIC).map((a) => ({
+    id: a.id,
+    title: a.title,
+    url: a.url,
+    source: a.source,
+    published_at: a.published_at,
+    score: a.score,
+    matched: matchedKeywords(`${a.title} ${a.summary ?? ""}`, keywords),
+  }));
+}
+
+// Only accepts the last 7 calendar days (today included) — the history view
+// is a short lookback, not a full archive browser.
+function isValidRecentDate(dateStr: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  const parsed = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return false;
+  const now = new Date();
+  const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const diffDays = Math.round((todayUTC.getTime() - parsed.getTime()) / 86_400_000);
+  return diffDays >= 0 && diffDays <= 6;
+}
+
+const ARTICLE_COLUMNS = "a.id, a.title, a.url, a.source, a.summary, a.published_at, ta.score";
+
+// Shared by GET /api/feed and the scheduled digest email, so both always
+// agree on what "today's feed" actually looks like.
+async function buildFeed(dateParam: string | null) {
+  const { rows: topics } = await pool.query("SELECT id, name, keywords FROM topics ORDER BY id");
+
+  return Promise.all(
+    topics.map(async (topic) => {
+      if (dateParam) {
+        // A specific past day was asked for — show exactly what matched
+        // then. No "today" fallback; that framing only makes sense when no
+        // explicit date was requested.
+        const { rows: candidates } = await pool.query<RawArticle>(
+          `SELECT ${ARTICLE_COLUMNS}
+           FROM topic_articles ta
+           JOIN articles a ON a.id = ta.article_id
+           WHERE ta.topic_id = $1 AND a.published_at::date = $2::date
+           ORDER BY ta.score DESC
+           LIMIT $3`,
+          [topic.id, dateParam, RAW_CANDIDATE_LIMIT]
+        );
+        return { ...topic, articles: buildArticles(candidates, topic.keywords), stale: false };
+      }
+
+      // "Today" per the server's clock (UTC in local dev) — matches plan.md's
+      // punted decision to not deal with per-user timezones yet.
+      const { rows: todayCandidates } = await pool.query<RawArticle>(
+        `SELECT ${ARTICLE_COLUMNS}
+         FROM topic_articles ta
+         JOIN articles a ON a.id = ta.article_id
+         WHERE ta.topic_id = $1 AND a.published_at::date = CURRENT_DATE
+         ORDER BY ta.score DESC
+         LIMIT $2`,
+        [topic.id, RAW_CANDIDATE_LIMIT]
+      );
+
+      if (todayCandidates.length > 0) {
+        return { ...topic, articles: buildArticles(todayCandidates, topic.keywords), stale: false };
+      }
+
+      // Nothing matched today — fall back to this topic's most recent
+      // matches regardless of date, newest first, rather than leaving the
+      // card empty. `stale` tells the frontend to label these as such.
+      const { rows: recentCandidates } = await pool.query<RawArticle>(
+        `SELECT ${ARTICLE_COLUMNS}
+         FROM topic_articles ta
+         JOIN articles a ON a.id = ta.article_id
+         WHERE ta.topic_id = $1
+         ORDER BY a.published_at DESC NULLS LAST
+         LIMIT $2`,
+        [topic.id, RAW_CANDIDATE_LIMIT]
+      );
+      const articles = buildArticles(recentCandidates, topic.keywords);
+      return { ...topic, articles, stale: articles.length > 0 };
+    })
+  );
+}
 
 app.get(
   "/api/feed",
-  asyncRoute(async (_req, res) => {
-    const { rows: topics } = await pool.query(
-      "SELECT id, name, keywords FROM topics ORDER BY id"
-    );
+  asyncRoute(async (req, res) => {
+    const dateParam = typeof req.query.date === "string" ? req.query.date : null;
+    if (dateParam && !isValidRecentDate(dateParam)) {
+      res.status(400).json({ error: "date must be YYYY-MM-DD within the last 7 days." });
+      return;
+    }
 
-    const feed = await Promise.all(
-      topics.map(async (topic) => {
-        // "Today" per the server's clock (UTC in local dev) — matches
-        // plan.md's punted decision to not deal with per-user timezones yet.
-        const { rows: todayArticles } = await pool.query(
-          `SELECT a.id, a.title, a.url, a.source, a.published_at, ta.score
-           FROM topic_articles ta
-           JOIN articles a ON a.id = ta.article_id
-           WHERE ta.topic_id = $1
-             AND a.published_at::date = CURRENT_DATE
-           ORDER BY ta.score DESC
-           LIMIT $2`,
-          [topic.id, ARTICLES_PER_TOPIC]
-        );
-
-        if (todayArticles.length > 0) {
-          return { ...topic, articles: todayArticles, stale: false };
-        }
-
-        // Nothing matched today — fall back to this topic's most recent
-        // matches regardless of date, newest first, rather than leaving the
-        // card empty. `stale` tells the frontend to label these as such.
-        const { rows: recentArticles } = await pool.query(
-          `SELECT a.id, a.title, a.url, a.source, a.published_at, ta.score
-           FROM topic_articles ta
-           JOIN articles a ON a.id = ta.article_id
-           WHERE ta.topic_id = $1
-           ORDER BY a.published_at DESC NULLS LAST
-           LIMIT $2`,
-          [topic.id, ARTICLES_PER_TOPIC]
-        );
-
-        return { ...topic, articles: recentArticles, stale: recentArticles.length > 0 };
-      })
-    );
-
-    res.json(feed);
+    res.json(await buildFeed(dateParam));
   })
 );
 
@@ -328,12 +508,18 @@ function requireFetchAuth(req: Request, res: Response, next: NextFunction) {
 }
 
 // Manual, on-demand version of what Milestone 2/3's scripts do by hand.
+// ?email=1 additionally sends the digest email — only the scheduled GitHub
+// Actions workflow passes this, so clicking "Fetch news" in the UI never
+// triggers an email on its own.
 app.post(
   "/api/fetch",
   requireFetchAuth,
-  asyncRoute(async (_req, res) => {
+  asyncRoute(async (req, res) => {
     try {
       const { ingest, match } = await runIngestAndMatch();
+      if (req.query.email === "1") {
+        await sendDigestEmail();
+      }
       res.json({ ok: true, ingest, match });
     } catch (err) {
       const stderr = (err as { stderr?: string })?.stderr;
@@ -350,6 +536,9 @@ interface Quote {
   changePercent: number | null;
   currency: string | null;
   marketTime: number | null;
+  // Up to 7 most recent daily closes, oldest first, for the sidebar
+  // sparkline. Empty when unavailable — never blocks showing the price.
+  history: number[];
   error?: string;
 }
 
@@ -360,13 +549,14 @@ interface Quote {
 async function fetchQuote(symbol: string): Promise<Quote> {
   try {
     const res = await fetch(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`,
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1mo&interval=1d`,
       { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(8000) }
     );
     if (!res.ok) throw new Error(`Yahoo returned ${res.status}`);
 
     const data = await res.json();
-    const meta = data?.chart?.result?.[0]?.meta;
+    const result = data?.chart?.result?.[0];
+    const meta = result?.meta;
     if (!meta || typeof meta.regularMarketPrice !== "number") {
       throw new Error("Unrecognized symbol or response shape");
     }
@@ -376,6 +566,11 @@ async function fetchQuote(symbol: string): Promise<Quote> {
     const change = price - previousClose;
     const changePercent = previousClose !== 0 ? (change / previousClose) * 100 : 0;
 
+    const closes: unknown[] = result?.indicators?.quote?.[0]?.close ?? [];
+    const history = closes
+      .filter((c): c is number => typeof c === "number")
+      .slice(-7);
+
     return {
       symbol,
       price,
@@ -383,6 +578,7 @@ async function fetchQuote(symbol: string): Promise<Quote> {
       changePercent,
       currency: meta.currency ?? null,
       marketTime: meta.regularMarketTime ?? null,
+      history,
     };
   } catch (err) {
     return {
@@ -392,6 +588,7 @@ async function fetchQuote(symbol: string): Promise<Quote> {
       changePercent: null,
       currency: null,
       marketTime: null,
+      history: [],
       error: err instanceof Error ? err.message : "Unknown error",
     };
   }

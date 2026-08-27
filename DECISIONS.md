@@ -4,6 +4,21 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-27 — Five post-launch improvements: sparklines, source cap, match reasons, 7-day history, email scaffold
+
+**Decision:** Added, in one pass:
+- **Ticker sparklines** — Yahoo's chart endpoint already returned a full price series when given `range`/`interval` params, previously discarded down to just `meta`. Now keeps the last 7 daily closes and renders a tiny inline SVG trend line per ticker.
+- **Source diversity cap** — `/api/feed` now caps each topic's results at 3 articles per *outlet*, fetching up to 150 raw candidates by score and filtering down to `ARTICLES_PER_TOPIC` (30) so a prolific outlet can't dominate. Caught and fixed a real bug while building this: outlet identity had to come from the title suffix (`"Headline - Outlet"`), not the stored `articles.source` column — that column holds the *feed* name, and since a topic typically has exactly one feed, every one of its articles shares the same value, which would have collapsed each topic down to 3 articles total instead of 3-per-outlet. Caught by checking actual output before shipping, not assumed correct from the type signature.
+- **"Why did this match" tooltip** — the signal meter's title/aria-label now lists which of the topic's keywords were actually found in the article, recomputed at request time with the same word-boundary rule `match.ts` itself uses (not stored — `match.ts` only ever kept the final summed score, not the per-keyword contributions).
+- **7-day history view** — `GET /api/feed?date=YYYY-MM-DD` (validated to the last 7 days) shows exactly what matched a specific past day, no "today" fallback — that framing only makes sense for the undated default view. Frontend adds a row of date pills computed in UTC to match the server's own definition of "today".
+- **Morning digest email (scaffolded, not yet active)** — `/api/fetch?email=1` sends an HTML summary via Resend after a successful ingest+match; a no-op until `RESEND_API_KEY`/`DIGEST_EMAIL_TO` are actually set, so shipping the code doesn't require the account to exist yet. Only the GitHub Actions scheduled call passes `?email=1` — the "Fetch news" button doesn't, so manual clicks never spam the inbox.
+**Why:** all five were proposed as a recommended set of "next improvements" and approved together; 7-day (not full archive) history was the user's own scope call.
+**Alternatives considered:**
+- Storing per-keyword match contributions in `topic_articles` at match time, instead of recomputing at request time — rejected, would mean a schema change and keeping two representations of "why this matched" in sync; recomputation is cheap at this scale and always agrees with `match.ts` by construction
+- A full source-diversity SQL solution (window function in the query itself) — rejected in favor of a small in-memory post-filter; simpler to read and the candidate set (150 rows) is tiny
+- Sending the digest email on every `/api/fetch` call — rejected, would email on every manual "Fetch news" click; gated behind an explicit flag only the scheduled workflow sets
+
+## 2026-08-27 — Milestone 7 (Polish): per-feed failure isolation and cross-outlet dedup
 ## 2026-08-27 — Milestone 7 (Polish): per-feed failure isolation and cross-outlet dedup
 
 **Decision:** `ingest.ts` now wraps each feed's `parser.parseURL()` call in its own try/catch — a feed that's down or returns malformed XML is logged and skipped, not allowed to abort the rest of the run (previously a single bad feed would throw out of `main()` and every feed after it in the list never got processed). Separately, added cross-outlet duplicate detection: titles are normalized (outlet suffix stripped via the last `" - "` in the string, lowercased, punctuation stripped) before insert, checked against every normalized title already in `articles` (not just this run), and only the first-seen version of a story is kept.
