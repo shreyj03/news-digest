@@ -12,18 +12,20 @@ interface Article {
   summary: string | null;
 }
 
-/** Count all occurrences of `needle` in `haystack` (both already lowercased). */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Count whole-word/whole-phrase occurrences of `needle` in `haystack` (both
+ * already lowercased). Word-boundary-anchored rather than a plain substring
+ * search — a short keyword like "OPT" (immigration: Optional Practical
+ * Training) must not match inside unrelated words like "Options".
+ */
 function countOccurrences(haystack: string, needle: string): number {
   if (!needle) return 0;
-  let count = 0;
-  let from = 0;
-  while (true) {
-    const found = haystack.indexOf(needle, from);
-    if (found === -1) break;
-    count++;
-    from = found + needle.length;
-  }
-  return count;
+  const pattern = new RegExp(`\\b${escapeRegExp(needle)}\\b`, "g");
+  return haystack.match(pattern)?.length ?? 0;
 }
 
 async function main() {
@@ -88,29 +90,44 @@ async function main() {
   let totalMatches = 0;
   const perTopicCounts = new Map<number, number>();
 
-  for (const topic of topics) {
-    for (const article of articles) {
-      let score = 0;
-      for (const rawKeyword of topic.keywords) {
-        const keyword = rawKeyword.toLowerCase();
-        const tf = tfByKeyword.get(keyword)?.get(article.id) ?? 0;
-        if (tf === 0) continue;
-        score += tf * idfByKeyword.get(keyword)!;
+  // Full recompute inside a transaction rather than upserting on top of
+  // whatever's already there: a keyword edit or a scoring fix (like this
+  // one) can make a previously-stored match no longer qualify, and an
+  // upsert-only pass would leave that stale row behind forever.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM topic_articles");
+
+    for (const topic of topics) {
+      for (const article of articles) {
+        let score = 0;
+        for (const rawKeyword of topic.keywords) {
+          const keyword = rawKeyword.toLowerCase();
+          const tf = tfByKeyword.get(keyword)?.get(article.id) ?? 0;
+          if (tf === 0) continue;
+          score += tf * idfByKeyword.get(keyword)!;
+        }
+
+        if (score === 0) continue;
+
+        await client.query(
+          `INSERT INTO topic_articles (topic_id, article_id, score, matched_at)
+           VALUES ($1, $2, $3, now())`,
+          [topic.id, article.id, score]
+        );
+
+        totalMatches++;
+        perTopicCounts.set(topic.id, (perTopicCounts.get(topic.id) ?? 0) + 1);
       }
-
-      if (score === 0) continue;
-
-      await pool.query(
-        `INSERT INTO topic_articles (topic_id, article_id, score, matched_at)
-         VALUES ($1, $2, $3, now())
-         ON CONFLICT (topic_id, article_id)
-         DO UPDATE SET score = EXCLUDED.score, matched_at = now()`,
-        [topic.id, article.id, score]
-      );
-
-      totalMatches++;
-      perTopicCounts.set(topic.id, (perTopicCounts.get(topic.id) ?? 0) + 1);
     }
+
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
   }
 
   console.log(

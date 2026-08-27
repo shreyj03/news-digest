@@ -26,20 +26,16 @@ See [plan.md](./plan.md) for architecture, tech stack, and build order, and [DEC
    ```
    Open http://localhost:5173 — shows each topic's top 5 matched articles (expandable), lets you add/edit/delete topics, and has a "Fetch news" button to pull fresh articles without touching the terminal (Milestones 4–5).
 
-## Running ingestion (Milestone 2)
+Adding a topic in the UI automatically creates a Google News search feed for it (`feeds.topic_id`) and runs the first fetch — no manual feed setup needed. To add a *non*-auto-generated source (a specific publisher's own feed, say), insert a row into `feeds` directly (`url`, `name`, `topic_id` left `NULL`).
 
-Pulls articles from every feed listed in the `feeds` table and stores new ones in `articles` (safe to re-run — duplicate URLs are skipped).
+## Running ingestion + matching by hand (Milestones 2–3)
 
-```
-cd ingest && npm install && npm run ingest
-```
-
-To add another source, insert a row into `feeds` (`url`, `name`) — no code changes needed.
-
-## Running matching (Milestone 3)
-
-Scores every stored article against every topic's `keywords[]` using TF-IDF (term frequency normalized by article length, weighted by each keyword's rarity across the ingested corpus) and upserts scores into `topic_articles` (safe to re-run — re-matching just recomputes and updates the score).
+The same two steps the "Fetch news" button runs, if you'd rather run them from the terminal:
 
 ```
-cd ingest && npm run match
+cd ingest && npm install
+npm run ingest   # pulls articles from every feed, stores new ones (dedup'd by URL)
+npm run match    # scores every article against every topic via TF-IDF, word-boundary matched
 ```
+
+Both are safe to re-run — `ingest` skips articles it's already stored, and `match` fully recomputes `topic_articles` each time (not an upsert), so a keyword edit or scoring change can't leave stale matches behind.

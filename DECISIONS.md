@@ -4,6 +4,16 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-27 — Topics auto-manage their own feed; matching switched from substring to word-boundary
+
+**Decision:** `feeds` gained a nullable, unique `topic_id` column linking a feed to the topic it was auto-generated for. Creating a topic (`POST /api/topics`) now also inserts a Google News search feed for that topic's name (`Google News: <name>`) and immediately runs ingest+match; editing a topic's name (`PUT /api/topics/:id`) upserts that feed's query to match and re-fetches. Deleting a topic cascades its feed via the FK, same as `topic_articles` already did. `topic_id` is nullable so a manually-curated feed (e.g. a real publisher's own feed added later) isn't forced into this 1:1 shape.
+**Why:** the user asked why "US Immigration Law" never got articles — root cause was that `topics` and `feeds` were fully decoupled, so adding a topic never gave the ingestion pipeline anything to go fetch for it. Auto-generating a feed at topic-creation time closes that gap the way the user expected it to already work.
+**Alternatives considered:**
+- Leaving feeds fully manual and just telling the user to add one by hand each time — rejected, defeats the purpose of the "add a topic" flow being self-serve
+- A full many-to-many topics↔feeds join table — rejected as more structure than this app needs today; matching already scores every article against every topic regardless of source feed, so the 1:1 auto-feed is purely a convenience for "give this topic something to search," not a hard coupling
+**Also found and fixed while backfilling existing topics:** `match.ts`'s keyword matching used plain substring search, so the short keyword `"OPT"` (Optional Practical Training) matched inside unrelated words like `"Options"` — surfaced for real when a stock-ticker "OKLO" topic got matched into "US Immigration Law" via an "Options Tape" headline. Switched `countOccurrences` to word-boundary-anchored regex (`\bkeyword\b`). This also exposed that matching only ever upserted rows, never removed ones that stopped qualifying (from a keyword edit, or this same fix) — changed `match.ts` to a full delete-then-reinsert per run, wrapped in a transaction, so it can't drift from what the current keywords/scoring actually justify.
+**Backfilled live:** re-saved the two pre-existing topics ("US Immigration Law", "OKLO" — the latter added by the user directly through the running app, not through this session) via `PUT` to retroactively create their feeds and populate real matches, since they predated this feature.
+
 ## 2026-08-27 — Manual "Fetch news" button shells out to the existing scripts, doesn't inline them
 
 **Decision:** `POST /api/fetch` runs `npm run ingest` then `npm run match` in the `ingest/` package as child processes (via `child_process.exec`), rather than importing that logic into the API server. The frontend gets a "Fetch news" button that calls this, shows a "Fetching…" disabled state, and on success reloads the feed and shows each script's one-line summary.

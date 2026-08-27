@@ -85,6 +85,9 @@ function App() {
   const [newName, setNewName] = useState("");
   const [newKeywords, setNewKeywords] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
+  const [addingTopic, setAddingTopic] = useState(false);
+
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const [fetching, setFetching] = useState(false);
   const [fetchStatus, setFetchStatus] = useState<string | null>(null);
@@ -112,20 +115,27 @@ function App() {
       return;
     }
 
-    const res = await fetch(`${API_BASE}/api/topics`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, keywords: parseKeywordsInput(newKeywords) }),
-    });
+    setAddingTopic(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/topics`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, keywords: parseKeywordsInput(newKeywords) }),
+      });
+      const body = await res.json().catch(() => null);
 
-    if (!res.ok) {
-      setFormError(await readErrorMessage(res, `Failed to add topic (${res.status})`));
-      return;
+      if (!res.ok) {
+        setFormError(body?.error ?? `Failed to add topic (${res.status})`);
+        return;
+      }
+
+      setNewName("");
+      setNewKeywords("");
+      if (body?.warning) setFetchStatus(body.warning);
+      loadFeed();
+    } finally {
+      setAddingTopic(false);
     }
-
-    setNewName("");
-    setNewKeywords("");
-    loadFeed();
   }
 
   function startEdit(topic: TopicFeed) {
@@ -176,19 +186,26 @@ function App() {
     const name = editName.trim();
     if (!name) return;
 
-    const res = await fetch(`${API_BASE}/api/topics/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, keywords: parseKeywordsInput(editKeywords) }),
-    });
+    setSavingEdit(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/topics/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, keywords: parseKeywordsInput(editKeywords) }),
+      });
+      const body = await res.json().catch(() => null);
 
-    if (!res.ok) {
-      setError(await readErrorMessage(res, `Failed to save topic (${res.status})`));
-      return;
+      if (!res.ok) {
+        setError(body?.error ?? `Failed to save topic (${res.status})`);
+        return;
+      }
+
+      if (body?.warning) setFetchStatus(body.warning);
+      setEditingId(null);
+      loadFeed();
+    } finally {
+      setSavingEdit(false);
     }
-
-    setEditingId(null);
-    loadFeed();
   }
 
   async function handleDeleteClick(id: number) {
@@ -251,8 +268,12 @@ function App() {
                   placeholder="Keywords, comma separated"
                 />
                 <div className="topic-actions">
-                  <button onClick={() => saveEdit(topic.id)}>Save</button>
-                  <button onClick={cancelEdit}>Cancel</button>
+                  <button onClick={() => saveEdit(topic.id)} disabled={savingEdit}>
+                    {savingEdit ? "Saving…" : "Save"}
+                  </button>
+                  <button onClick={cancelEdit} disabled={savingEdit}>
+                    Cancel
+                  </button>
                 </div>
               </div>
             ) : (
@@ -325,11 +346,13 @@ function App() {
             onChange={(e) => setNewKeywords(e.target.value)}
             placeholder="Keywords, comma separated"
           />
-          <button type="submit">Add topic</button>
+          <button type="submit" disabled={addingTopic}>
+            {addingTopic ? "Adding…" : "Add topic"}
+          </button>
           {formError && <p className="error">{formError}</p>}
         </form>
         <p className="hint">
-          New topics stay empty until ingestion and matching run again.
+          We'll search Google News for this topic's name and pull today's matches right away.
         </p>
       </section>
     </main>

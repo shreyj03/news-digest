@@ -39,6 +39,44 @@ function parseKeywords(input: unknown): string[] {
     .filter((k) => k.length > 0);
 }
 
+// A topic's auto-generated feed is just a Google News search for the
+// topic's own name — the same pattern used for the original "ETFs" feed.
+function topicFeedUrl(topicName: string): string {
+  return `https://news.google.com/rss/search?q=${encodeURIComponent(topicName)}&hl=en-US&gl=US&ceid=US:en`;
+}
+
+// Both ingest/match scripts print a one-line summary as their last
+// console.log — pull just that out instead of relaying npm's banner lines
+// and Node's ExperimentalWarning noise to callers.
+function lastMeaningfulLine(stdout: string): string {
+  const lines = stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0 &&
+        !line.startsWith(">") &&
+        !line.includes("ExperimentalWarning") &&
+        !line.includes("Support for loading") &&
+        !line.includes("trace-warnings")
+    );
+  return lines.at(-1) ?? "";
+}
+
+// Shells out to the same `npm run ingest`/`npm run match` commands a person
+// would type by hand, rather than importing that logic into the API process
+// — keeps the ingestion pipeline a genuinely separate piece (see
+// DECISIONS.md), whether it's triggered by the "Fetch news" button or by
+// creating/editing a topic.
+async function runIngestAndMatch(): Promise<{ ingest: string; match: string }> {
+  const ingestResult = await execAsync("npm run ingest", { cwd: INGEST_DIR, timeout: 60_000 });
+  const matchResult = await execAsync("npm run match", { cwd: INGEST_DIR, timeout: 60_000 });
+  return {
+    ingest: lastMeaningfulLine(ingestResult.stdout),
+    match: lastMeaningfulLine(matchResult.stdout),
+  };
+}
+
 app.get(
   "/api/topics",
   asyncRoute(async (_req, res) => {
@@ -60,12 +98,13 @@ app.post(
       return;
     }
 
+    let topic;
     try {
       const result = await pool.query(
         "INSERT INTO topics (name, keywords) VALUES ($1, $2) RETURNING id, name, keywords, created_at",
         [name, keywords]
       );
-      res.status(201).json(result.rows[0]);
+      topic = result.rows[0];
     } catch (err) {
       if ((err as { code?: string }).code === "23505") {
         res.status(409).json({ error: "A topic with that name already exists." });
@@ -73,6 +112,25 @@ app.post(
       }
       throw err;
     }
+
+    // Best-effort: give the new topic a feed to search, then pull+match
+    // right away so it isn't empty until someone thinks to click "Fetch
+    // news." None of this should fail topic creation itself — the topic
+    // already exists at this point either way.
+    let warning: string | undefined;
+    try {
+      await pool.query(
+        "INSERT INTO feeds (url, name, topic_id) VALUES ($1, $2, $3)",
+        [topicFeedUrl(topic.name), `Google News: ${topic.name}`, topic.id]
+      );
+      await runIngestAndMatch();
+    } catch (err) {
+      warning = `Topic created, but the first fetch failed: ${
+        err instanceof Error ? err.message : "Unknown error"
+      }. Try "Fetch news" once things are running again.`;
+    }
+
+    res.status(201).json(warning ? { ...topic, warning } : topic);
   })
 );
 
@@ -93,6 +151,7 @@ app.put(
       return;
     }
 
+    let topic;
     try {
       const result = await pool.query(
         "UPDATE topics SET name = $1, keywords = $2 WHERE id = $3 RETURNING id, name, keywords, created_at",
@@ -102,7 +161,7 @@ app.put(
         res.status(404).json({ error: "Topic not found." });
         return;
       }
-      res.json(result.rows[0]);
+      topic = result.rows[0];
     } catch (err) {
       if ((err as { code?: string }).code === "23505") {
         res.status(409).json({ error: "A topic with that name already exists." });
@@ -110,6 +169,27 @@ app.put(
       }
       throw err;
     }
+
+    // Keep this topic's feed in sync with the new name — creating one if it
+    // never had one (e.g. a topic from before this feature existed), or
+    // updating the search query if it did — then re-fetch so matches
+    // reflect it.
+    let warning: string | undefined;
+    try {
+      await pool.query(
+        `INSERT INTO feeds (url, name, topic_id) VALUES ($1, $2, $3)
+         ON CONFLICT (topic_id)
+         DO UPDATE SET url = EXCLUDED.url, name = EXCLUDED.name`,
+        [topicFeedUrl(topic.name), `Google News: ${topic.name}`, topic.id]
+      );
+      await runIngestAndMatch();
+    } catch (err) {
+      warning = `Topic updated, but re-fetching its articles failed: ${
+        err instanceof Error ? err.message : "Unknown error"
+      }. Try "Fetch news" once things are running again.`;
+    }
+
+    res.json(warning ? { ...topic, warning } : topic);
   })
 );
 
@@ -163,46 +243,13 @@ app.get(
   })
 );
 
-// Both scripts print a one-line summary as their last console.log — pull just
-// that out instead of relaying npm's banner lines and Node's ExperimentalWarning
-// noise to the UI.
-function lastMeaningfulLine(stdout: string): string {
-  const lines = stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(
-      (line) =>
-        line.length > 0 &&
-        !line.startsWith(">") &&
-        !line.includes("ExperimentalWarning") &&
-        !line.includes("Support for loading") &&
-        !line.includes("trace-warnings")
-    );
-  return lines.at(-1) ?? "";
-}
-
-// Manual, on-demand version of what Milestone 2/3's scripts do by hand —
-// this route just shells out to the same `npm run ingest`/`npm run match`
-// commands a person would type, so the ingestion pipeline stays a separate
-// process from the web app rather than getting inlined into it.
+// Manual, on-demand version of what Milestone 2/3's scripts do by hand.
 app.post(
   "/api/fetch",
   asyncRoute(async (_req, res) => {
     try {
-      const ingestResult = await execAsync("npm run ingest", {
-        cwd: INGEST_DIR,
-        timeout: 60_000,
-      });
-      const matchResult = await execAsync("npm run match", {
-        cwd: INGEST_DIR,
-        timeout: 60_000,
-      });
-
-      res.json({
-        ok: true,
-        ingest: lastMeaningfulLine(ingestResult.stdout),
-        match: lastMeaningfulLine(matchResult.stdout),
-      });
+      const { ingest, match } = await runIngestAndMatch();
+      res.json({ ok: true, ingest, match });
     } catch (err) {
       const stderr = (err as { stderr?: string })?.stderr;
       const message = stderr?.trim() || (err instanceof Error ? err.message : "Unknown error");

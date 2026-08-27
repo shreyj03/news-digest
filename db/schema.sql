@@ -10,7 +10,12 @@ CREATE TABLE IF NOT EXISTS topics (
 CREATE TABLE IF NOT EXISTS feeds (
     id SERIAL PRIMARY KEY,
     url TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    -- Set when this feed was auto-generated for a topic (a Google News
+    -- search for that topic's name), so creating/renaming/deleting a topic
+    -- can keep its feed in sync. NULL for manually-curated feeds not tied
+    -- to one topic. UNIQUE so a topic has at most one auto-generated feed.
+    topic_id INTEGER REFERENCES topics(id) ON DELETE CASCADE UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS articles (
