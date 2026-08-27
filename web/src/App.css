@@ -28,6 +28,78 @@ h1 {
   font-size: 0.9rem;
 }
 
+.topic-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.topic-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.topic-actions button {
+  font-size: 0.85rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  background: #f5f5f5;
+  cursor: pointer;
+}
+
+.topic-actions button.secondary {
+  background: #fff;
+}
+
+.topic-actions button.danger {
+  border-color: #f0b4b4;
+  background: #fdecec;
+  color: #b91c1c;
+}
+
+.edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.edit-form input,
+.add-topic input {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-family: inherit;
+}
+
+.add-topic form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.add-topic button[type="submit"] {
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  border: 1px solid #1a4fd6;
+  background: #1a4fd6;
+  color: #fff;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.hint {
+  margin: 0.5rem 0 0;
+  color: #888;
+  font-size: 0.8rem;
+}
+
 .empty {
   margin: 0;
   color: #888;

@@ -4,6 +4,16 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-27 — Topic management: inline edit/delete on the feed page, no native confirm dialogs
+
+**Decision:** Milestone 5's add/edit/delete UI lives directly on the existing feed page (no separate route/page — there's no router yet). Editing a topic swaps its card into inline text inputs with Save/Cancel; deleting requires two clicks (first click turns the button into "Confirm delete" + a Cancel button, second click actually deletes) instead of a native `window.confirm()`.
+**Why:** A separate "manage topics" page would need client-side routing for a single-user app with two topics — not worth it yet. The two-click delete avoids a native browser confirm dialog, which is both worse UX (blocks the whole page, no styling) and a known automation hazard — Chrome-based tools (Claude's own browser automation included) can get stuck once a native dialog is open, so avoiding it keeps the page scriptable/testable, not just prettier.
+**Alternatives considered:**
+- `window.confirm()` before delete — rejected for the dialog-blocking reason above
+- A dedicated `/topics` route with react-router — rejected as premature; revisit if the topic list or the management UI actually needs its own page
+**API side:** `POST/PUT/DELETE /api/topics` added, wrapped in a shared `asyncRoute` helper so a rejected promise (e.g. a DB error) calls `next(err)` instead of silently hanging the client — the read-only GET routes never surfaced this gap, but a failed write leaving the browser waiting forever is a much worse failure mode. Unique-name violations (Postgres error code `23505`) map to `409`, missing rows to `404`.
+**Verified live** via Playwright end-to-end: created a test topic, edited its name (confirmed the edit form pre-populates from current values), confirmed delete's two-click behavior doesn't fire on the first click, then deleted it — DB back to exactly the original 2 topics afterward.
+
 ## 2026-08-27 — One combined `/api/feed` endpoint, capped at 30 articles per topic
 
 **Decision:** Added `GET /api/feed`, which returns every topic with its top-scoring matched articles nested inline (`ORDER BY score DESC LIMIT 30` per topic), fetched via `Promise.all` across topics. The frontend calls this single endpoint once rather than fetching topics and then per-topic articles separately.

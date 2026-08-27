@@ -19,12 +19,12 @@ See [plan.md](./plan.md) for architecture, tech stack, and build order, and [DEC
    ```
    cd api && npm install && npm run dev
    ```
-   Serves `GET /api/topics` and `GET /api/feed` (topics with their top-scoring matched articles) on http://localhost:3001.
+   Serves `GET/POST /api/topics`, `PUT/DELETE /api/topics/:id`, and `GET /api/feed` (topics with their top-scoring matched articles) on http://localhost:3001.
 3. Start the frontend:
    ```
    cd web && npm install && npm run dev
    ```
-   Open http://localhost:5173 — shows each topic with its matched articles (Milestone 4).
+   Open http://localhost:5173 — shows each topic with its matched articles, and lets you add, edit, or delete topics directly from the page (Milestones 4–5).
 
 ## Running ingestion (Milestone 2)
 

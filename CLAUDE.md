@@ -3,7 +3,7 @@
 A website where you add topics and each morning it fetches and shows fresh articles matched to those topics.
 
 **Stack:** React/TypeScript/Vite frontend (`web/`), Express/TypeScript API (`api/`), standalone ingestion script (`ingest/`), Postgres (`db/`).
-**Status:** Milestone 4 (feed UI) complete — `GET /api/feed` returns each topic with its top 30 TF-IDF-scored articles nested inline, and the React page (`web/src/App.tsx`) renders topics with their matched articles (title, source, date, score), showing "No matching articles yet" for topics with none. "US Immigration Law" is still empty since no immigration feed has been ingested. Milestone 5 (topic management from the UI instead of the DB directly) is next.
+**Status:** Milestone 5 (topic management) complete — the feed page now supports add/edit/delete of topics directly from the UI (`POST/PUT/DELETE /api/topics`), no more editing Postgres by hand. Editing is inline on each topic card; delete requires two clicks (no native confirm dialogs — see DECISIONS.md). Verified end-to-end with Playwright. Milestone 6 (scheduling ingestion/matching via node-cron locally, EventBridge+Lambda deployed) is next.
 
 See [plan.md](./plan.md) for the full build order, [DECISIONS.md](./DECISIONS.md) for why things were built the way they were, and [README.md](./README.md) for how to run it locally.
 
