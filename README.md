@@ -1,8 +1,18 @@
 # News Digest
 
-A website where you add topics and each morning it fetches and shows fresh articles matched to those topics.
+**Live at https://news-digest-web.onrender.com**
 
-See [plan.md](./plan.md) for architecture, tech stack, and build order, and [DECISIONS.md](./DECISIONS.md) for why things were built the way they were.
+A personal daily news digest: tell it what topics you care about, and each morning it searches Google News, scores every article against your topics with TF-IDF, and shows you the best matches — styled like an old newspaper's front page.
+
+## What it does
+
+- **Topics you manage** — add a topic by name (e.g. "OKLO", "US Immigration Law") and it automatically creates a search feed for it and pulls today's matches right away. Edit or delete anytime from the page itself.
+- **Real ranking, not just keyword hits** — articles are scored with TF-IDF (word-boundary matched, weighted by how rare each keyword is across everything ingested), shown as a signal-strength meter rather than a raw number.
+- **Fetches itself every morning** — a GitHub Actions workflow triggers ingestion + matching daily before 7am Pacific, so it's ready before 8am with no manual step. A "Fetch news" button on the page does the same thing on demand.
+- **Live stock tickers** — a sidebar with real-time prices (via Yahoo Finance) for symbols you add or remove.
+- **Password-gated editing** — viewing the feed is open to anyone with the link; adding, editing, or deleting topics/tickers requires unlocking with a site password.
+
+See [plan.md](./plan.md) for the original architecture and build order, and [DECISIONS.md](./DECISIONS.md) for why things were actually built the way they were — including several points where the build ended up deviating from that original plan.
 
 ## Running locally (Milestone 1)
 
