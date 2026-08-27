@@ -68,6 +68,7 @@ Editing is gated behind a site password — click "Unlock to edit" and enter it 
    - `news-digest-api`: `DATABASE_URL` (from Neon), `FETCH_SECRET` (any random string — this is what GitHub Actions uses), `SITE_PASSWORD` (your choice — gates adding/editing/deleting topics & tickers and manual fetch; leave unset for no gate).
    - `news-digest-web`: `VITE_API_BASE` (the `news-digest-api` service's URL — only known after its first deploy, so this is a second pass: deploy, copy the API's URL, set this, redeploy the static site).
 3. In the GitHub repo's settings, add two Actions secrets: `API_URL` (same API URL as above) and `FETCH_SECRET` (same value as set in Render).
+4. Update the hardcoded `news-digest-web.onrender.com` URLs in `web/index.html`'s Open Graph/Twitter meta tags (`og:url`, `og:image`, `twitter:image`) to your own frontend's domain — link-preview cards (WhatsApp, iMessage, Slack, etc.) read these, and a stale URL means a broken preview image even though the site itself works fine.
 
 The free web service spins down after 15 minutes idle, so the first request after a quiet stretch has a ~30–60s cold-start delay — the scheduled fetch's 120s timeout absorbs this.
 
