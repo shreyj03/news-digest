@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: news-digest-api
+    runtime: node
+    plan: free
+    # ingest/ needs its own node_modules too — /api/fetch shells out to it
+    # (see DECISIONS.md on keeping the ingestion pipeline a separate piece).
+    buildCommand: npm install --prefix api && npm run build --prefix api && npm install --prefix ingest
+    startCommand: npm start --prefix api
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: FETCH_SECRET
+        sync: false
+      - key: SITE_PASSWORD
+        sync: false
+
+  - type: web
+    name: news-digest-web
+    runtime: static
+    plan: free
+    buildCommand: npm install --prefix web && npm run build --prefix web
+    staticPublishPath: web/dist
+    envVars:
+      - key: VITE_API_BASE
+        sync: false

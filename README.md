@@ -39,3 +39,17 @@ npm run match    # scores every article against every topic via TF-IDF, word-bou
 ```
 
 Both are safe to re-run — `ingest` skips articles it's already stored, and `match` fully recomputes `topic_articles` each time (not an upsert), so a keyword edit or scoring change can't leave stale matches behind.
+
+## Deployed version (Milestone 6)
+
+Runs for free on [Render](https://render.com) (`render.yaml` blueprint — an API web service + a static frontend site), with [Neon](https://neon.tech) for Postgres and a GitHub Actions scheduled workflow (`.github/workflows/daily-fetch.yml`) triggering the same `/api/fetch` the button does, once daily before 7am Pacific. See DECISIONS.md for why this shape instead of plan.md's original node-cron/EventBridge sketch.
+
+**One-time setup:**
+
+1. Create a free [Neon](https://neon.tech) project, copy its Postgres connection string, and apply `db/schema.sql` (and `db/seed.sql` if you want the starting topics) against it.
+2. In Render: **New → Blueprint**, point at this GitHub repo, deploy. Fill in the env vars it prompts for:
+   - `news-digest-api`: `DATABASE_URL` (from Neon), `FETCH_SECRET` (any random string — this is what GitHub Actions uses), `SITE_PASSWORD` (your choice — gates adding/editing/deleting topics & tickers and manual fetch; leave unset for no gate).
+   - `news-digest-web`: `VITE_API_BASE` (the `news-digest-api` service's URL — only known after its first deploy, so this is a second pass: deploy, copy the API's URL, set this, redeploy the static site).
+3. In the GitHub repo's settings, add two Actions secrets: `API_URL` (same API URL as above) and `FETCH_SECRET` (same value as set in Render).
+
+The free web service spins down after 15 minutes idle, so the first request after a quiet stretch has a ~30–60s cold-start delay — the scheduled fetch's 120s timeout absorbs this.

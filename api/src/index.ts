@@ -4,6 +4,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { timingSafeEqual } from "node:crypto";
 import { pool } from "./db.js";
 
 const execAsync = promisify(exec);
@@ -37,6 +38,32 @@ function parseKeywords(input: unknown): string[] {
     .filter((k): k is string => typeof k === "string")
     .map((k) => k.trim())
     .filter((k) => k.length > 0);
+}
+
+// Constant-time string compare — a plain `===` on a secret leaks timing
+// information proportional to how many leading characters match.
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+// Gates every mutating topic/ticker route. A no-op locally (SITE_PASSWORD
+// unset) — this only matters once the app is reachable on the public
+// internet, per plan.md's own "add auth if deployed publicly" note.
+function requireSitePassword(req: Request, res: Response, next: NextFunction) {
+  const expected = process.env.SITE_PASSWORD;
+  if (!expected) {
+    next();
+    return;
+  }
+  const provided = req.header("X-Site-Password");
+  if (provided && safeEqual(provided, expected)) {
+    next();
+    return;
+  }
+  res.status(401).json({ error: "Site password required." });
 }
 
 // A topic's auto-generated feed is just a Google News search for the
@@ -77,6 +104,24 @@ async function runIngestAndMatch(): Promise<{ ingest: string; match: string }> {
   };
 }
 
+// Lets the frontend verify a password before storing it in localStorage,
+// rather than storing whatever was typed and finding out it's wrong on the
+// next mutating request.
+app.post("/api/auth", (req, res) => {
+  const expected = process.env.SITE_PASSWORD;
+  if (!expected) {
+    // No password configured (local dev) — nothing to unlock.
+    res.json({ ok: true });
+    return;
+  }
+  const provided = typeof req.body?.password === "string" ? req.body.password : "";
+  if (safeEqual(provided, expected)) {
+    res.json({ ok: true });
+    return;
+  }
+  res.status(401).json({ error: "Wrong password." });
+});
+
 app.get(
   "/api/topics",
   asyncRoute(async (_req, res) => {
@@ -89,6 +134,7 @@ app.get(
 
 app.post(
   "/api/topics",
+  requireSitePassword,
   asyncRoute(async (req, res) => {
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
     const keywords = parseKeywords(req.body?.keywords);
@@ -136,6 +182,7 @@ app.post(
 
 app.put(
   "/api/topics/:id",
+  requireSitePassword,
   asyncRoute(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
@@ -195,6 +242,7 @@ app.put(
 
 app.delete(
   "/api/topics/:id",
+  requireSitePassword,
   asyncRoute(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
@@ -264,9 +312,25 @@ app.get(
   })
 );
 
+// /api/fetch has two legitimate callers with two different secrets: the
+// GitHub Actions scheduled workflow (server-to-server, using FETCH_SECRET —
+// a token that's never shipped to the browser) and you, via the "Fetch
+// news" button (using the same site password everything else is gated
+// behind). Either one is accepted; neither implies the other.
+function requireFetchAuth(req: Request, res: Response, next: NextFunction) {
+  const fetchSecret = process.env.FETCH_SECRET;
+  const authHeader = req.header("Authorization");
+  if (fetchSecret && authHeader && safeEqual(authHeader, `Bearer ${fetchSecret}`)) {
+    next();
+    return;
+  }
+  requireSitePassword(req, res, next);
+}
+
 // Manual, on-demand version of what Milestone 2/3's scripts do by hand.
 app.post(
   "/api/fetch",
+  requireFetchAuth,
   asyncRoute(async (_req, res) => {
     try {
       const { ingest, match } = await runIngestAndMatch();
@@ -346,6 +410,7 @@ app.get(
 
 app.post(
   "/api/tickers",
+  requireSitePassword,
   asyncRoute(async (req, res) => {
     const symbol = typeof req.body?.symbol === "string" ? req.body.symbol.trim().toUpperCase() : "";
     if (!symbol) {
@@ -379,6 +444,7 @@ app.post(
 
 app.delete(
   "/api/tickers/:id",
+  requireSitePassword,
   asyncRoute(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {

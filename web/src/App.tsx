@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import "./App.css";
 
-const API_BASE = "http://localhost:3001";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3001";
 const TICKER_REFRESH_MS = 60_000;
+const SITE_PASSWORD_KEY = "news-digest-site-password";
 
 interface Article {
   id: number;
@@ -145,6 +146,61 @@ function App() {
   const [tickerError, setTickerError] = useState<string | null>(null);
   const [addingTicker, setAddingTicker] = useState(false);
 
+  // Site password — only meaningful once deployed with SITE_PASSWORD set;
+  // /api/auth is a no-op success locally, so this stays effectively unused
+  // in local dev.
+  const [sitePassword, setSitePassword] = useState<string | null>(() =>
+    localStorage.getItem(SITE_PASSWORD_KEY)
+  );
+  const [showUnlock, setShowUnlock] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [unlocking, setUnlocking] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  function authHeaders(): Record<string, string> {
+    return sitePassword ? { "X-Site-Password": sitePassword } : {};
+  }
+
+  // Shared 401 handling for every mutating call below: the stored password
+  // (if any) turned out to be wrong or missing, so drop it and ask again
+  // rather than silently failing.
+  function handleLocked() {
+    localStorage.removeItem(SITE_PASSWORD_KEY);
+    setSitePassword(null);
+    setShowUnlock(true);
+    setAuthError("Locked — enter the site password to make changes.");
+  }
+
+  async function handleUnlock(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setAuthError(null);
+    setUnlocking(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: passwordInput }),
+      });
+      if (!res.ok) {
+        setAuthError("Wrong password.");
+        return;
+      }
+      localStorage.setItem(SITE_PASSWORD_KEY, passwordInput);
+      setSitePassword(passwordInput);
+      setPasswordInput("");
+      setShowUnlock(false);
+    } catch {
+      setAuthError("Couldn't reach the API.");
+    } finally {
+      setUnlocking(false);
+    }
+  }
+
+  function handleLock() {
+    localStorage.removeItem(SITE_PASSWORD_KEY);
+    setSitePassword(null);
+  }
+
   function loadFeed() {
     fetch(`${API_BASE}/api/feed`)
       .then((res) => {
@@ -188,11 +244,15 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/topics`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ name, keywords: parseKeywordsInput(newKeywords) }),
       });
       const body = await res.json().catch(() => null);
 
+      if (res.status === 401) {
+        handleLocked();
+        return;
+      }
       if (!res.ok) {
         setFormError(body?.error ?? `Failed to add topic (${res.status})`);
         return;
@@ -224,9 +284,16 @@ function App() {
     setError(null);
 
     try {
-      const res = await fetch(`${API_BASE}/api/fetch`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/fetch`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
       const body = await res.json().catch(() => null);
 
+      if (res.status === 401) {
+        handleLocked();
+        return;
+      }
       if (!res.ok) {
         setError(body?.error ?? `Fetch failed (${res.status})`);
         return;
@@ -259,11 +326,15 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/topics/${id}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ name, keywords: parseKeywordsInput(editKeywords) }),
       });
       const body = await res.json().catch(() => null);
 
+      if (res.status === 401) {
+        handleLocked();
+        return;
+      }
       if (!res.ok) {
         setError(body?.error ?? `Failed to save topic (${res.status})`);
         return;
@@ -283,9 +354,16 @@ function App() {
       return;
     }
 
-    const res = await fetch(`${API_BASE}/api/topics/${id}`, { method: "DELETE" });
+    const res = await fetch(`${API_BASE}/api/topics/${id}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
     setConfirmDeleteId(null);
 
+    if (res.status === 401) {
+      handleLocked();
+      return;
+    }
     if (!res.ok) {
       setError(await readErrorMessage(res, `Failed to delete topic (${res.status})`));
       return;
@@ -304,11 +382,15 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/tickers`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ symbol }),
       });
       const body = await res.json().catch(() => null);
 
+      if (res.status === 401) {
+        handleLocked();
+        return;
+      }
       if (!res.ok) {
         setTickerError(body?.error ?? `Failed to add ticker (${res.status})`);
         return;
@@ -322,7 +404,14 @@ function App() {
   }
 
   async function handleRemoveTicker(id: number) {
-    const res = await fetch(`${API_BASE}/api/tickers/${id}`, { method: "DELETE" });
+    const res = await fetch(`${API_BASE}/api/tickers/${id}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    if (res.status === 401) {
+      handleLocked();
+      return;
+    }
     if (res.ok) loadTickers();
   }
 
@@ -342,6 +431,37 @@ function App() {
             <button onClick={handleFetchNews} disabled={fetching}>
               {fetching ? "Fetching…" : "Fetch news"}
             </button>
+          </div>
+          <div className="auth-row">
+            {sitePassword ? (
+              <>
+                <span className="auth-status">Unlocked</span>
+                <button className="auth-toggle" onClick={handleLock}>
+                  Lock
+                </button>
+              </>
+            ) : showUnlock ? (
+              <form className="unlock-form" onSubmit={handleUnlock}>
+                <input
+                  type="password"
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  placeholder="Site password"
+                  autoFocus
+                />
+                <button type="submit" disabled={unlocking}>
+                  {unlocking ? "Checking…" : "Unlock"}
+                </button>
+                <button type="button" className="auth-toggle" onClick={() => setShowUnlock(false)}>
+                  Cancel
+                </button>
+                {authError && <span className="auth-error">{authError}</span>}
+              </form>
+            ) : (
+              <button className="auth-toggle" onClick={() => setShowUnlock(true)}>
+                Unlock to edit
+              </button>
+            )}
           </div>
         </header>
 

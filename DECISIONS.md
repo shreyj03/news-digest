@@ -4,6 +4,28 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-27 — Milestone 6 became a real free deployment, not local node-cron
+
+**Decision:** plan.md's Milestone 6 was "node-cron locally, then EventBridge once deployed." Asked for the fetch to reliably land before 8am daily, and given local scheduling depends on the Mac being awake and a Claude Code session having started that day, the user opted to deploy for real instead — for free, replacing both the local-cron half and the AWS half of the original plan:
+- **Render** (web service for the API + static site for the frontend) — already had an account.
+- **Neon** for Postgres instead of Render's own Postgres product, which expires 30 days after creation (14-day grace period, then deletion) — Neon's free tier has no such expiration.
+- **GitHub Actions' free scheduled workflows** (`.github/workflows/daily-fetch.yml`) instead of Render Cron Jobs (not actually free — $1/mo minimum) or AWS EventBridge+Lambda (a second cloud provider and account for one small personal app). The repo is already public, so Actions minutes are unlimited. The workflow just `curl`s the existing `/api/fetch` endpoint — no new ingestion-triggering code, reusing exactly what the "Fetch news" button already calls.
+- Cron is pinned to `14:13 UTC` — GitHub's schedule cron doesn't shift for DST, so a fixed UTC time drifts by an hour across the year relative to Pacific local time. Picked the value that equals 7:13 AM in Pacific *summer* time (PDT, UTC-7); in winter (PST, UTC-8) the same UTC time lands at 6:13 AM Pacific instead — earlier, never later, so "before 8am" holds year-round without needing two seasonal cron entries.
+**Why:** the user's actual requirement ("ready before 8am every morning," stated as a hard constraint) isn't something local scheduling can honestly guarantee on a personal laptop — this was surfaced and confirmed with the user (via `AskUserQuestion`) rather than silently built as node-cron anyway. Render's Postgres/Cron Job free-tier limits were verified via web search before committing to this architecture, not assumed from memory.
+**Alternatives considered:**
+- Local node-cron + launchd (see the two options originally proposed) — rejected once the user clarified they wanted a real hosted website, not something tied to the Mac being on
+- Render's own Postgres — rejected, 30-day expiration means recurring data loss/migration the user didn't ask to sign up for
+- Render Cron Jobs — rejected on cost; GitHub Actions does the identical job (an HTTP call on a timer) for zero cost, reusing an endpoint that already exists
+
+## 2026-08-27 — Lightweight shared-password gate instead of full auth
+
+**Decision:** Added `SITE_PASSWORD` (checked via `X-Site-Password` header, constant-time compared) gating every mutating route (`POST/PUT/DELETE /api/topics*`, `POST/DELETE /api/tickers*`) and `POST /api/fetch` (which also separately accepts `Authorization: Bearer <FETCH_SECRET>` for the GitHub Actions workflow — two independent secrets, since the automation shouldn't need to know the site password and vice versa). No user accounts, sessions, or password hashing — one password, one shared secret, checked directly against an env var. Read-only `GET` routes stay open. The frontend has a small "Unlock to edit" control that verifies the password via `POST /api/auth`, then stores it in `localStorage` and attaches it to every mutating request; a 401 anywhere clears the stored password and re-prompts. Both `SITE_PASSWORD` and `FETCH_SECRET` are no-ops when unset, so local dev is completely unaffected.
+**Why:** plan.md explicitly punted auth with the condition "add it later if you deploy it publicly" — that condition is now true. A public `DELETE /api/topics/:id` with no gate at all would let anyone with the URL wipe the topic list; a full login system (accounts, password hashing, sessions) is real scope this single-user personal tool doesn't need.
+**Alternatives considered:**
+- Ship fully open, add auth later — considered and explicitly declined by the user once the risk (anyone can edit/delete your data) was made concrete
+- Real user accounts / JWT sessions — rejected as overbuilt for an app with exactly one intended user
+- Gating `GET` routes too — rejected, no reason to require a password just to view your own public digest from your phone
+
 ## 2026-08-27 — Redesigned to an old-newspaper look, replacing the "desk + paper cards" concept
 
 **Decision:** Full visual system change per direct user request: newsprint paper background (`#f1ede2`) instead of the dark "desk," near-black ink instead of warm parchment cards, a single masthead red (`#a3202f`) instead of brass/amber, flat edges and hairline/double rules instead of rounded cards with soft shadows. New typefaces: Playfair Display for the masthead nameplate only (high-contrast, editorial, used in exactly one place — the signature), Newsreader kept for article headlines, IBM Plex Mono kept for meta/data (bylines, scores, tickers). The masthead now has a centered nameplate, an italic tagline, and a "dateline" row (today's date, fetch status, and the Fetch News button together) framed by a double rule, evoking a real paper's edition line. Topic columns get a vertical rule between them on wide screens, echoing real newsprint columns. "Add a topic" restyled as a dashed "clip and file" classified box. Tickers sidebar restyled as a plain rule-divided stock table.
