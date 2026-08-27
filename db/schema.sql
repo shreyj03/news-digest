@@ -34,3 +34,11 @@ CREATE TABLE IF NOT EXISTS topic_articles (
     score REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (topic_id, article_id)
 );
+
+-- Ticker symbols to show live prices for in the sidebar. Prices themselves
+-- aren't stored — fetched live from Yahoo Finance on each request.
+CREATE TABLE IF NOT EXISTS tickers (
+    id SERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL UNIQUE,
+    added_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

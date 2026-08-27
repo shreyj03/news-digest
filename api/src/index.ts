@@ -279,6 +279,122 @@ app.post(
   })
 );
 
+interface Quote {
+  symbol: string;
+  price: number | null;
+  change: number | null;
+  changePercent: number | null;
+  currency: string | null;
+  marketTime: number | null;
+  error?: string;
+}
+
+// Yahoo Finance's unofficial chart endpoint — no API key required, same
+// no-signup spirit as using Google News RSS for articles. Unofficial and
+// could break or rate-limit without notice; each ticker fails independently
+// rather than taking the whole panel down (see DECISIONS.md).
+async function fetchQuote(symbol: string): Promise<Quote> {
+  try {
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`,
+      { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(8000) }
+    );
+    if (!res.ok) throw new Error(`Yahoo returned ${res.status}`);
+
+    const data = await res.json();
+    const meta = data?.chart?.result?.[0]?.meta;
+    if (!meta || typeof meta.regularMarketPrice !== "number") {
+      throw new Error("Unrecognized symbol or response shape");
+    }
+
+    const price = meta.regularMarketPrice;
+    const previousClose = meta.previousClose ?? meta.chartPreviousClose ?? price;
+    const change = price - previousClose;
+    const changePercent = previousClose !== 0 ? (change / previousClose) * 100 : 0;
+
+    return {
+      symbol,
+      price,
+      change,
+      changePercent,
+      currency: meta.currency ?? null,
+      marketTime: meta.regularMarketTime ?? null,
+    };
+  } catch (err) {
+    return {
+      symbol,
+      price: null,
+      change: null,
+      changePercent: null,
+      currency: null,
+      marketTime: null,
+      error: err instanceof Error ? err.message : "Unknown error",
+    };
+  }
+}
+
+app.get(
+  "/api/tickers",
+  asyncRoute(async (_req, res) => {
+    const { rows: tickers } = await pool.query("SELECT id, symbol FROM tickers ORDER BY id");
+    const withQuotes = await Promise.all(
+      tickers.map(async (ticker) => ({ ...ticker, quote: await fetchQuote(ticker.symbol) }))
+    );
+    res.json(withQuotes);
+  })
+);
+
+app.post(
+  "/api/tickers",
+  asyncRoute(async (req, res) => {
+    const symbol = typeof req.body?.symbol === "string" ? req.body.symbol.trim().toUpperCase() : "";
+    if (!symbol) {
+      res.status(400).json({ error: "Ticker symbol is required." });
+      return;
+    }
+
+    // Confirm it's a real, quotable symbol before storing it — otherwise a
+    // typo just sits there as a permanently broken card.
+    const quote = await fetchQuote(symbol);
+    if (quote.error) {
+      res.status(400).json({ error: `Couldn't find a quote for "${symbol}".` });
+      return;
+    }
+
+    try {
+      const result = await pool.query(
+        "INSERT INTO tickers (symbol) VALUES ($1) RETURNING id, symbol",
+        [symbol]
+      );
+      res.status(201).json({ ...result.rows[0], quote });
+    } catch (err) {
+      if ((err as { code?: string }).code === "23505") {
+        res.status(409).json({ error: "That ticker is already being watched." });
+        return;
+      }
+      throw err;
+    }
+  })
+);
+
+app.delete(
+  "/api/tickers/:id",
+  asyncRoute(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      res.status(400).json({ error: "Invalid ticker id." });
+      return;
+    }
+
+    const result = await pool.query("DELETE FROM tickers WHERE id = $1", [id]);
+    if (result.rowCount === 0) {
+      res.status(404).json({ error: "Ticker not found." });
+      return;
+    }
+    res.status(204).end();
+  })
+);
+
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   console.error(err);
   res.status(500).json({ error: "Internal server error." });

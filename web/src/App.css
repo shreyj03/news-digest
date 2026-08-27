@@ -67,10 +67,18 @@ body {
    Layout / masthead
    ============================================================ */
 
-main {
-  max-width: 1120px;
+.page {
+  max-width: 1440px;
   margin: 0 auto;
   padding: 2.5rem 1.5rem 4rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 2rem;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
 }
 
 .topics-grid {
@@ -82,6 +90,12 @@ main {
 @media (max-width: 860px) {
   .topics-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 980px) {
+  .page {
+    flex-direction: column;
   }
 }
 
@@ -428,7 +442,7 @@ main {
   border: 1.5px dashed var(--desk-line);
   border-radius: 4px;
   padding: 1.4rem 1.5rem;
-  margin-top: 2.2rem;
+  margin-bottom: 2rem;
 }
 
 .add-topic h2 {
@@ -509,11 +523,162 @@ input:focus-visible {
 }
 
 /* ============================================================
+   Tickers panel
+   ============================================================ */
+
+.tickers-panel {
+  flex: 0 0 260px;
+  width: 260px;
+  position: sticky;
+  top: 2rem;
+}
+
+.tickers-panel h2 {
+  margin: 0 0 0.9rem;
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 1.1rem;
+  color: var(--desk-text);
+}
+
+.ticker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.ticker-row {
+  border: 1px solid var(--desk-line);
+  border-radius: 4px;
+  padding: 0.7rem 0.85rem;
+}
+
+.ticker-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ticker-symbol {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--desk-text);
+}
+
+.ticker-remove {
+  background: none;
+  border: none;
+  color: var(--desk-muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+
+.ticker-remove:hover {
+  color: var(--danger);
+}
+
+.ticker-price-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-top: 0.35rem;
+}
+
+.ticker-price {
+  font-family: var(--display);
+  font-size: 1.3rem;
+  font-weight: 500;
+  color: var(--desk-text);
+}
+
+.ticker-change {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+
+.ticker-change.up {
+  color: #6fbf8b;
+}
+
+.ticker-change.down {
+  color: #e08585;
+}
+
+.ticker-unavailable {
+  display: block;
+  margin-top: 0.35rem;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--desk-muted);
+}
+
+.add-ticker {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.add-ticker input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--ui);
+  font-size: 0.85rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--desk-line);
+  border-radius: 4px;
+  background: #232933;
+  color: var(--desk-text);
+}
+
+.add-ticker input::placeholder {
+  color: var(--desk-muted);
+}
+
+.add-ticker button {
+  font-family: var(--ui);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.45rem 0.8rem;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.add-ticker button:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--desk);
+}
+
+@media (max-width: 980px) {
+  .tickers-panel {
+    flex: 1;
+    width: 100%;
+    position: static;
+  }
+
+  .ticker-list {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .ticker-row {
+    flex: 1 1 200px;
+  }
+}
+
+/* ============================================================
    Responsive
    ============================================================ */
 
 @media (max-width: 560px) {
-  main {
+  .page {
     padding: 1.75rem 1rem 3rem;
   }
   .masthead {

@@ -14,3 +14,9 @@ INSERT INTO feeds (url, name, topic_id) VALUES
         (SELECT id FROM topics WHERE name = 'ETFs')
     )
 ON CONFLICT (url) DO NOTHING;
+
+-- Default watched tickers
+INSERT INTO tickers (symbol) VALUES
+    ('OKLO'),
+    ('COIN')
+ON CONFLICT (symbol) DO NOTHING;

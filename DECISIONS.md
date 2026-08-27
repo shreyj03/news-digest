@@ -4,6 +4,16 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-27 — Live ticker sidebar via Yahoo Finance's unofficial quote endpoint, no API key
+
+**Decision:** New `tickers` table (`symbol`, unique) plus `GET/POST /api/tickers` and `DELETE /api/tickers/:id`. Prices aren't stored — `GET /api/tickers` fetches live from `query1.finance.yahoo.com/v8/finance/chart/{symbol}` on every request (per-ticker `Promise.all`, 8s timeout each), so the panel is exactly as fresh as the last request. The frontend polls it every 60s and also on the topic-feed page load. Adding a ticker validates the symbol against a real quote fetch before storing it, so a typo doesn't sit there as a permanently broken card. The panel lives in a right-hand sidebar (`position: sticky`), stacking below the main content under 980px.
+**Why:** direct user request for live prices on OKLO/Coinbase, "for now" implying more will be added later — matched with `tickers` as a proper managed table + simple add/remove UI (mirroring the `topics` pattern already established) rather than hardcoding two symbols. Yahoo's endpoint needs no signup, matching this project's existing precedent of using unofficial-but-workable no-auth sources (see the Google News RSS decision) — the user explicitly confirmed this choice.
+**Alternatives considered:**
+- A real financial data API (Alpha Vantage, Finnhub, etc.) — more legitimate/stable, but needs an API key and signup; rejected for the same "avoid setup friction for a personal project" reasoning as the earlier Anthropic-key deferral, and the user confirmed Yahoo directly
+- Caching/storing quotes server-side on a timer — rejected as unnecessary complexity for 2–3 tickers refreshed client-side every 60s; revisit if the ticker list grows large enough that per-request fan-out to Yahoo becomes a real cost
+- Hardcoding OKLO/COIN in the frontend instead of a table — rejected, "tickers I select" implies ongoing management, same reasoning that drove full topic CRUD earlier in this project
+**Known risk:** same as the Google News RSS dependency — this is an unofficial, undocumented Yahoo endpoint that could change shape or start blocking without notice. Each ticker fails independently (`quote.error` → "Price unavailable" card) so one bad symbol or a Yahoo outage doesn't take down the whole panel.
+
 ## 2026-08-27 — Uniform card height; fall back to recent matches when nothing's from today
 
 **Decision:** Dropped `align-items: start` from `.topics-grid`, so cards revert to CSS Grid's default `stretch` — both cards in a row now share that row's height, at the cost of blank space under a shorter card. Separately, `/api/feed` no longer just returns an empty list for a topic with nothing from today: it falls back to that topic's most recent matches (any date, ordered by `published_at DESC`), and flags the response with `stale: true` so the frontend can show "Nothing matched today — showing the most recent matches" instead of silently mixing dates in with no explanation, or showing a dead-looking empty card.
