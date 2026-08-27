@@ -25,3 +25,13 @@ See [plan.md](./plan.md) for architecture, tech stack, and build order, and [DEC
    cd web && npm install && npm run dev
    ```
    Open http://localhost:5173.
+
+## Running ingestion (Milestone 2)
+
+Pulls articles from every feed listed in the `feeds` table and stores new ones in `articles` (safe to re-run — duplicate URLs are skipped).
+
+```
+cd ingest && npm install && npm run ingest
+```
+
+To add another source, insert a row into `feeds` (`url`, `name`) — no code changes needed.

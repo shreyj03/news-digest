@@ -4,6 +4,21 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-27 — First ingestion feed: Google News RSS query, not a single publisher feed
+
+**Decision:** Milestone 2's one RSS feed is a Google News search feed (`news.google.com/rss/search?q=ETF`) rather than a single outlet's own RSS feed (e.g. ETF.com directly).
+**Why:** A topic-query feed aggregates many publishers under one URL, so it's less likely to go dark than any one site's feed, and it's already thematically matched to the seeded "ETFs" topic — useful real data for Milestone 3's keyword matching. Verified working via a live fetch (106 items parsed on first run).
+**Alternatives considered:**
+- A single publisher's own RSS feed (e.g. ETF.com, CNBC's ETF section) — rejected for now, more single-point-of-failure risk than a query feed; may still add specific publisher feeds later per plan.md's "10-15 sources" note
+- Note: Google News RSS links are Google redirect URLs, not the publisher's canonical article URL — acceptable for now since `articles.url` just needs to be unique per item, but worth knowing if dedup-across-sources becomes a concern later
+
+## 2026-08-27 — Ingestion reads feed list from the `feeds` table, not a hardcoded URL
+
+**Decision:** The ingestion script queries the `feeds` table for what to fetch, rather than hardcoding the feed URL in code.
+**Why:** The schema already has a `feeds` table for exactly this. Reading from it means adding more sources later (plan.md's "10-15 feeds" step) is just an INSERT, not a code change.
+**Alternatives considered:**
+- Hardcoding the URL directly in `ingest.ts` — rejected, defers work that's essentially free right now given the table already exists
+
 ## 2026-08-27 — API queries Postgres for topics instead of returning a hardcoded array
 
 **Decision:** `GET /api/topics` queries the `topics` table in Postgres rather than serving an in-memory hardcoded list.
