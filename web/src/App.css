@@ -10,29 +10,64 @@ h1 {
   margin-bottom: 1.5rem;
 }
 
-.topics {
-  list-style: none;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.topics li {
+.topic {
   border: 1px solid #ddd;
   border-radius: 8px;
   padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
 }
 
-.topics h2 {
+.topic h2 {
   margin: 0 0 0.25rem;
   font-size: 1.1rem;
 }
 
 .keywords {
-  margin: 0;
+  margin: 0 0 0.75rem;
   color: #666;
   font-size: 0.9rem;
+}
+
+.empty {
+  margin: 0;
+  color: #888;
+  font-size: 0.9rem;
+  font-style: italic;
+}
+
+.articles {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.articles li {
+  padding-top: 0.75rem;
+  border-top: 1px solid #eee;
+}
+
+.articles li:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.articles a {
+  font-weight: 500;
+  text-decoration: none;
+  color: #1a4fd6;
+}
+
+.articles a:hover {
+  text-decoration: underline;
+}
+
+.meta {
+  margin-top: 0.15rem;
+  color: #888;
+  font-size: 0.8rem;
 }
 
 .error {

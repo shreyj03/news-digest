@@ -4,6 +4,15 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-27 — One combined `/api/feed` endpoint, capped at 30 articles per topic
+
+**Decision:** Added `GET /api/feed`, which returns every topic with its top-scoring matched articles nested inline (`ORDER BY score DESC LIMIT 30` per topic), fetched via `Promise.all` across topics. The frontend calls this single endpoint once rather than fetching topics and then per-topic articles separately.
+**Why:** The feed page needs topics-with-their-articles in one shot; a single combined endpoint means one network round trip from the browser instead of 1 (topics) + N (articles per topic). The 30-per-topic cap keeps the page an actual "digest" — with 101 matched articles on "ETFs" already, showing all of them would defeat the point of a morning digest.
+**Alternatives considered:**
+- Separate `GET /api/topics` + `GET /api/topics/:id/articles` calls from the frontend — rejected, more round trips for no real benefit at this scale; kept `/api/topics` around anyway since Milestone 5 (topic management) will likely still want it standalone
+- A single SQL query using `json_agg`/`LATERAL` instead of one query per topic — considered for avoiding N+1 queries entirely, but with only 2 topics right now the `Promise.all` version is simpler to read and just as fast; revisit if the topic count grows enough for N+1 latency to matter
+- No cap on articles per topic — rejected, already-visible 101-article dump for one topic makes the page unusable as a "digest"
+
 ## 2026-08-27 — Matching score upgraded to TF-IDF
 
 **Decision:** `topic_articles.score` is now a TF-IDF sum over a topic's keywords, not a raw keyword-hit count. For each keyword: term frequency is its occurrence count in an article's title+summary normalized by that article's word count (so a short title matching twice doesn't lose to a long article matching twice), and inverse document frequency is the smoothed `ln((N+1)/(df+1)) + 1` form (same shape scikit-learn defaults to), computed once per keyword across the whole ingested corpus. An article's score for a topic is the sum of `tf * idf` over that topic's keywords; articles with all-zero keyword hits still get no `topic_articles` row.
