@@ -3,6 +3,41 @@
 ## What this is
 A website where you add topics (e.g. "AI regulation", "Seattle Kraken", "Rust language") and each morning it fetches and shows fresh articles matched to those topics. No mobile app, no push notifications. You open the site, see a feed grouped by topic.
 
+## Final architecture (as deployed)
+
+*Added after the build. Everything below this section is the original plan, kept as written for reference — see [DECISIONS.md](./DECISIONS.md) for the reasoning behind each place the final result differs from it.*
+
+**Live at https://news-digest-web.onrender.com**
+
+```
+[GitHub Actions — daily cron, ~7am Pacific year-round]
+                |
+                v  POST /api/fetch  (Authorization: Bearer FETCH_SECRET)
+[Render — news-digest-api, Express/TypeScript]
+                |
+                |  child process: npm run ingest && npm run match
+                v
+[ingest/ — RSS parsed, articles stored, TF-IDF scored into topic_articles]
+                |
+                v
+[Neon Postgres — DATABASE_URL]
+                ^
+                |  GET /api/topics, /api/feed, /api/tickers
+                |  POST/PUT/DELETE (gated by X-Site-Password)
+[Render — news-digest-web, React/TypeScript static site]
+```
+
+- **Frontend:** React + TypeScript + Vite, as planned — deployed as a Render static site. Visual design ended up an old-newspaper look (newsprint paper, ink, one masthead red, Playfair Display nameplate + Newsreader headlines + IBM Plex Mono data) after an earlier "dark desk + paper cards" pass was explicitly replaced.
+- **Backend API:** Node/Express/TypeScript, as planned — deployed as a Render free web service. Still invokes `ingest/`'s scripts as child processes (`npm run ingest && npm run match`) rather than importing that logic directly, keeping the ingestion pipeline a genuinely separate piece even though it now runs inside the same container as the web app.
+- **DB:** Postgres, as planned — specifically Neon rather than a self-hosted or Render-provided instance, since Render's own free Postgres tier expires 30 days after creation.
+- **Matching:** landed on the TF-IDF end of the plan's "keyword/TF-IDF" range, not the plain-keyword-count version — word-boundary matched (not substring), normalized by article length, weighted by each keyword's rarity across the ingested corpus. The raw keyword-count version shipped first and was upgraded once real data showed it couldn't discriminate strength of match.
+- **Scheduler:** GitHub Actions' free scheduled workflow, not node-cron/EventBridge — hits the same `/api/fetch` a person would trigger by hand from the UI, cron-pinned to land at/before 7am Pacific year-round despite GitHub's fixed-UTC schedule and daylight saving.
+- **Deploy:** Render (a web service + a static site), not a Docker container on a VM — same "doesn't need heavy infra" reasoning as the original plan, landed on a different specific platform once "deploy this for free" became the actual requirement.
+- **Auth:** the plan's punted "skip login, add it later if deployed publicly" — resolved once the app actually was, with a single shared `SITE_PASSWORD` gating all mutating routes (not a full account/login system, which this single-user app doesn't need).
+- **Not in the original plan:** topics auto-manage their own Google News feed on create/rename (no more hand-curating the `feeds` table); a live stock-ticker sidebar (Yahoo Finance's no-key endpoint, symbols you add/remove); a "Fetch news" button for on-demand refresh alongside the daily schedule; the feed defaults to today's articles only, falling back to a topic's most recent matches (clearly flagged as such) when nothing's from today.
+
+**Build order:** all 7 milestones below are done, several going further than originally scoped (matching upgraded to TF-IDF; feed UI got a 2-column grid with progressive disclosure rather than a flat list; scheduling became a real deployment instead of local cron). One "Polish" item from the original list is genuinely not done yet: `ingest.ts` doesn't isolate per-feed failures — a single broken feed currently aborts the whole ingestion run rather than skipping just that feed. Exact-URL dedup has existed since Milestone 2; cross-outlet near-duplicate dedup (the same story from two different sources) was never built.
+
 ## Architecture
 
 ```
