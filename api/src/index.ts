@@ -148,7 +148,7 @@ async function sendDigestEmail(): Promise<void> {
             const borderTop = i === 0 ? "none" : "1px solid #ded2b0";
             const padding = i === 0 ? "0 0 14px" : "14px 0";
             return `<tr><td style="padding:${padding};border-top:${borderTop};">
-              <a href="${a.url}" style="font-family:${SERIF};font-size:16px;line-height:1.35;font-weight:normal;color:#1c1a15;text-decoration:none;">${escapeHtml(headline)}</a>
+              <a href="${escapeHtml(a.url)}" style="font-family:${SERIF};font-size:16px;line-height:1.35;font-weight:normal;color:#1c1a15;text-decoration:none;">${escapeHtml(headline)}</a>
               ${outlet ? `<div style="font-family:${MONO};font-size:11px;letter-spacing:0.05em;text-transform:uppercase;color:#635c4b;margin-top:5px;">${escapeHtml(outlet)}</div>` : ""}
             </td></tr>`;
           })
