@@ -15,6 +15,10 @@ import {
   getUserByEmail,
   getUserById,
   resolveDemoUserId,
+  createPasswordResetToken,
+  getUserIdByPasswordResetToken,
+  deletePasswordResetToken,
+  deleteAllSessionsForUser,
   type User,
 } from "./auth.js";
 
@@ -451,6 +455,79 @@ ${sections}
   }
 }
 
+// Best-effort, never throws, same contract as the other two. resetUrl
+// already has the token baked in (?token=...) — the frontend reads it off
+// the URL on load and shows a "set new password" form; nothing in this
+// email itself needs to know that shape.
+async function sendPasswordResetEmailForUser(user: User, resetUrl: string): Promise<boolean> {
+  if (!process.env.BREVO_API_KEY || !process.env.DIGEST_EMAIL_FROM) return false;
+
+  try {
+    const siteUrl = process.env.SITE_URL ?? "https://news-digest-web.onrender.com";
+    const iconUrl = `${siteUrl}/email-icon.png`;
+    const SERIF = "Georgia,'Times New Roman',serif";
+    const MONO = "'Courier New',ui-monospace,Menlo,Consolas,monospace";
+
+    const html = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Reset your News Digest password</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f1ede2;">
+<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">Reset your News Digest password — this link expires in an hour.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background-color:#f1ede2;">
+<tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;border-collapse:collapse;">
+
+<tr><td align="center" style="padding:0 0 14px;">
+  <img src="${iconUrl}" width="40" height="40" alt="" style="display:block;margin:0 auto 10px;border:0;" />
+  <div style="font-family:${MONO};font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#635c4b;margin-bottom:10px;">Account Notice</div>
+  <a href="${siteUrl}" style="font-family:${SERIF};font-weight:900;font-size:38px;letter-spacing:-0.01em;text-transform:uppercase;color:#1c1a15;text-decoration:none;">News Digest</a>
+  <div style="font-family:${SERIF};font-style:italic;font-size:15px;color:#635c4b;margin-top:6px;">Reset your password</div>
+</td></tr>
+
+<tr><td style="border-top:3px double #1c1a15;border-bottom:1px solid #1c1a15;padding:8px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td align="left" style="font-family:${MONO};font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#1c1a15;">${escapeHtml(user.email)}</td>
+    <td align="right" style="font-family:${MONO};font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#a3202f;">&#9679; Expires In 1 Hour</td>
+  </tr></table>
+</td></tr>
+
+<tr><td style="padding-top:22px;">
+  <p style="font-family:${SERIF};font-size:15px;line-height:1.5;color:#1c1a15;margin:0;">We got a request to reset the password on this account. If that was you, set a new one below — the link only works once, and only for the next hour.</p>
+</td></tr>
+
+<tr><td style="padding-top:26px;" align="center">
+  <a href="${resetUrl}" style="display:inline-block;font-family:${SERIF};font-weight:bold;font-size:15px;color:#f1ede2;text-decoration:none;background-color:#a3202f;padding:12px 28px;">Set a new password &rarr;</a>
+</td></tr>
+
+<tr><td style="padding-top:22px;">
+  <p style="font-family:${SERIF};font-style:italic;font-size:13px;line-height:1.5;color:#635c4b;margin:0;">Didn't request this? You can ignore this email — your password stays what it was.</p>
+</td></tr>
+
+<tr><td style="padding-top:34px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;"><tr>
+    <td align="center" style="border-top:1px solid #ded2b0;padding-top:20px;">
+      <div style="font-family:${MONO};font-size:10px;letter-spacing:0.05em;text-transform:uppercase;color:#635c4b;">news-digest-web.onrender.com</div>
+    </td>
+  </tr></table>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+
+    return await sendEmail(user.email, "Reset your News Digest password", html);
+  } catch (err) {
+    console.error(`Password reset email failed for user ${user.id}:`, err);
+    return false;
+  }
+}
+
 function isValidEmail(email: string): boolean {
   // Deliberately loose — just enough to catch obvious typos/garbage, not a
   // full RFC 5322 parser. Real validation is "can they receive the digest
@@ -560,6 +637,63 @@ app.post(
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : null;
     if (token) await deleteSession(token);
     res.status(204).end();
+  })
+);
+
+// Always responds the same way regardless of whether the email matches a
+// real, claimed account — an attacker probing which emails have accounts
+// shouldn't be able to tell from the response, only from whether an email
+// actually shows up (which they can't observe). Rate-limited same as
+// signup/login: this is still a password-adjacent guessing surface (mass
+// reset-spam against arbitrary addresses), even though it doesn't check a
+// password itself.
+app.post(
+  "/api/forgot-password",
+  asyncRoute(async (req, res) => {
+    if (authRateLimited(clientIp(req))) {
+      res.status(429).json({ error: "Too many attempts. Try again in a minute." });
+      return;
+    }
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    const user = await getUserByEmail(email);
+    // Only a real, already-claimed account can have its password reset —
+    // an unclaimed bootstrap row has no password to forget in the first
+    // place; that email should go through /api/signup instead.
+    if (user && user.password_hash !== null) {
+      const token = await createPasswordResetToken(user.id);
+      const siteUrl = process.env.SITE_URL ?? "https://news-digest-web.onrender.com";
+      const resetUrl = `${siteUrl}/?resetToken=${token}`;
+      sendPasswordResetEmailForUser(user, resetUrl).catch((err) =>
+        console.error("Password reset email failed:", err)
+      );
+    }
+    recordAuthSuccess(clientIp(req));
+    res.json({ ok: true, message: "If that email has an account, a reset link is on its way." });
+  })
+);
+
+app.post(
+  "/api/reset-password",
+  asyncRoute(async (req, res) => {
+    const token = typeof req.body?.token === "string" ? req.body.token : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (password.length < 8) {
+      res.status(400).json({ error: "Password must be at least 8 characters." });
+      return;
+    }
+
+    const userId = await getUserIdByPasswordResetToken(token);
+    if (!userId) {
+      res.status(400).json({ error: "That reset link is invalid or has expired." });
+      return;
+    }
+
+    await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [hashPassword(password), userId]);
+    await deletePasswordResetToken(token);
+    await deleteAllSessionsForUser(userId);
+    // Log them straight in with a fresh session rather than sending them
+    // back to a login form right after they just proved account ownership.
+    await respondWithSession(res, userId, 200);
   })
 );
 

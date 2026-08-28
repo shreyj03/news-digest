@@ -48,6 +48,42 @@ export async function deleteSession(token: string): Promise<void> {
   await pool.query("DELETE FROM sessions WHERE token = $1", [token]);
 }
 
+const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1 hour — short-lived on purpose
+
+export async function createPasswordResetToken(userId: number): Promise<string> {
+  const token = randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
+  await pool.query(
+    "INSERT INTO password_reset_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)",
+    [token, userId, expiresAt]
+  );
+  return token;
+}
+
+// Single-use: the caller is expected to consume the returned user id and
+// then immediately delete the token (see deletePasswordResetToken) as part
+// of actually resetting the password — kept as two steps rather than one
+// atomic "consume" so the route can validate first, then act.
+export async function getUserIdByPasswordResetToken(token: string): Promise<number | null> {
+  const { rows } = await pool.query<{ user_id: number }>(
+    "SELECT user_id FROM password_reset_tokens WHERE token = $1 AND expires_at > now()",
+    [token]
+  );
+  return rows[0]?.user_id ?? null;
+}
+
+export async function deletePasswordResetToken(token: string): Promise<void> {
+  await pool.query("DELETE FROM password_reset_tokens WHERE token = $1", [token]);
+}
+
+// Every existing session is invalidated on a password reset — standard
+// practice (if the password was forgotten/compromised, anything already
+// logged in shouldn't get a free pass), and low-cost here since forgetting
+// a password usually means there's no active session to lose anyway.
+export async function deleteAllSessionsForUser(userId: number): Promise<void> {
+  await pool.query("DELETE FROM sessions WHERE user_id = $1", [userId]);
+}
+
 const USER_COLUMNS =
   "id, email, digest_time, digest_timezone, digest_enabled, last_fetch_date, last_digest_sent_date, created_at";
 const USER_COLUMNS_PREFIXED = "u.id, u.email, u.digest_time, u.digest_timezone, u.digest_enabled, u.last_fetch_date, u.last_digest_sent_date, u.created_at";

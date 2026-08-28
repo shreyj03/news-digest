@@ -33,7 +33,7 @@ See [plan.md](./plan.md) for the original architecture and build order, and [DEC
    ```
    cd api && npm install && npm run dev
    ```
-   Serves `POST /api/signup`/`/api/login`/`/api/logout`, `GET /api/me`, `PUT /api/me/digest`, `GET/POST /api/topics`, `PUT/DELETE /api/topics/:id`, `GET /api/feed` (optionally `?date=YYYY-MM-DD` for the last 7 days), `POST /api/fetch` (your own topics, on demand), `POST /api/tick` (the scheduled per-user fetch+send loop), and `GET/POST /api/tickers` + `DELETE /api/tickers/:id` (live quotes with a 7-day price history) on http://localhost:3001.
+   Serves `POST /api/signup`/`/api/login`/`/api/logout`, `POST /api/forgot-password`/`/api/reset-password` (email a one-time, one-hour link to `/?resetToken=...`), `GET /api/me`, `PUT /api/me/digest`, `GET/POST /api/topics`, `PUT/DELETE /api/topics/:id`, `GET /api/feed` (optionally `?date=YYYY-MM-DD` for the last 7 days), `POST /api/fetch` (your own topics, on demand), `POST /api/tick` (the scheduled per-user fetch+send loop), and `GET/POST /api/tickers` + `DELETE /api/tickers/:id` (live quotes with a 7-day price history) on http://localhost:3001.
 3. Start the frontend:
    ```
    cd web && npm install && npm run dev

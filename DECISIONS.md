@@ -4,6 +4,16 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-28 — Forgot-password flow
+
+**Decision:** Added `POST /api/forgot-password` (`{ email }` → always the same generic response regardless of whether it matched an account, so the response itself can't be used to probe which emails have accounts) and `POST /api/reset-password` (`{ token, password }` → validates, updates the password, deletes the token, invalidates every existing session for that user, and logs them straight into a fresh one). Tokens live in a new `password_reset_tokens` table — same shape as `sessions`, but single-use (deleted on redemption) and short-lived (1 hour). The email itself (`sendPasswordResetEmailForUser`) links to `${SITE_URL}/?resetToken=...`; the frontend reads that query param on load, shows a "set new password" form in place of the normal login/demo UI, and strips the token from the URL via `history.replaceState` so a refresh can't re-show or resubmit it.
+
+**Why:** the user asked directly ("I forgot the password for my account") — this is the standard secure pattern for exactly that, and it's the only way to fix it that doesn't involve Claude handling a password. Reusing the account-guessing rate limiter (`authRateLimited`) on `/api/forgot-password` too, since mass-triggering reset emails at arbitrary addresses is the same class of abuse as password-guessing even though it doesn't check a password itself. Only a claimed account (`password_hash IS NOT NULL`) can have its password reset — the unclaimed bootstrap row has no password to forget, and that email should go through `/api/signup`'s claim path instead.
+
+**Alternatives considered:**
+- A single combined "reset" table doing double duty as both the token store and an audit log — rejected, conflates two different lifetimes (a token needs to disappear the moment it's used or expires; an audit trail would want the opposite) for no real benefit at this scale.
+- Not deleting existing sessions on reset — rejected: if the password was forgotten because of a real security concern (not just "typed it wrong once too often"), leaving old sessions valid defeats part of the point of resetting it.
+
 ## 2026-08-28 — Email provider: Resend → Brevo
 
 **Decision:** Replaced Resend with Brevo for both the digest and welcome emails. `sendDigestEmailForUser`/`sendWelcomeEmailForUser` now go through one shared `sendEmail(to, subject, html)` helper calling Brevo's `POST https://api.brevo.com/v3/smtp/email` (auth via an `api-key` header, not `Authorization: Bearer`; body is `{ sender: { name, email }, to: [{ email }], subject, htmlContent }`). Env vars changed from `RESEND_API_KEY` to `BREVO_API_KEY` + `DIGEST_EMAIL_FROM` (both now required together — `DIGEST_EMAIL_FROM` must be exactly the address verified as a sender in Brevo's dashboard).

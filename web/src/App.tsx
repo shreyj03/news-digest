@@ -268,11 +268,32 @@ function App() {
   const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem(AUTH_TOKEN_KEY));
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
-  const [authMode, setAuthMode] = useState<"login" | "signup" | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "signup" | "forgot" | null>(null);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [forgotSubmitting, setForgotSubmitting] = useState(false);
+  const [forgotMessage, setForgotMessage] = useState<string | null>(null);
+
+  // Set only when the page loads with ?resetToken=... (from the email link)
+  // — takes over the whole auth-row area with a "set new password" form
+  // regardless of authMode while it's active.
+  const [resetToken, setResetToken] = useState<string | null>(null);
+  const [resetPasswordInput, setResetPasswordInput] = useState("");
+  const [resetSubmitting, setResetSubmitting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("resetToken");
+    if (!token) return;
+    setResetToken(token);
+    // Strip it from the URL so a refresh doesn't re-show/resubmit it.
+    params.delete("resetToken");
+    const rest = params.toString();
+    window.history.replaceState({}, "", window.location.pathname + (rest ? `?${rest}` : ""));
+  }, []);
 
   const [showDigestSettings, setShowDigestSettings] = useState(false);
   const [digestTime, setDigestTime] = useState("07:00");
@@ -386,6 +407,60 @@ function App() {
       setAuthError("Couldn't reach the API.");
     } finally {
       setAuthSubmitting(false);
+    }
+  }
+
+  async function handleForgotPassword(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setAuthError(null);
+    setForgotSubmitting(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/forgot-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: authEmail }),
+      });
+      const body = await res.json().catch(() => null);
+      // Always the same message regardless of whether the email matched an
+      // account — matches the API's own intentionally-generic response.
+      setForgotMessage(body?.message ?? "If that email has an account, a reset link is on its way.");
+    } catch {
+      setAuthError("Couldn't reach the API.");
+    } finally {
+      setForgotSubmitting(false);
+    }
+  }
+
+  async function handleResetPassword(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setResetError(null);
+    setResetSubmitting(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: resetToken, password: resetPasswordInput }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        setResetError(body?.error ?? "That reset link is invalid or has expired.");
+        return;
+      }
+
+      localStorage.setItem(AUTH_TOKEN_KEY, body.token);
+      setAuthToken(body.token);
+      setCurrentUser(body.user);
+      setDigestTime(body.user.digest_time.slice(0, 5));
+      setDigestTimezone(body.user.digest_timezone);
+      setDigestEnabled(body.user.digest_enabled);
+      setResetToken(null);
+      setResetPasswordInput("");
+      loadFeed(selectedDate, body.token);
+      loadTickers(body.token);
+    } catch {
+      setResetError("Couldn't reach the API.");
+    } finally {
+      setResetSubmitting(false);
     }
   }
 
@@ -692,7 +767,24 @@ function App() {
             })}
           </div>
           <div className="auth-row">
-            {!authChecked ? null : currentUser ? (
+            {resetToken ? (
+              <form className="unlock-form" onSubmit={handleResetPassword}>
+                <input
+                  type="password"
+                  value={resetPasswordInput}
+                  onChange={(e) => setResetPasswordInput(e.target.value)}
+                  placeholder="New password"
+                  autoFocus
+                />
+                <button type="submit" disabled={resetSubmitting}>
+                  {resetSubmitting ? "…" : "Set new password"}
+                </button>
+                <button type="button" className="auth-toggle" onClick={() => setResetToken(null)}>
+                  Cancel
+                </button>
+                {resetError && <span className="auth-error">{resetError}</span>}
+              </form>
+            ) : !authChecked ? null : currentUser ? (
               <>
                 <span className="auth-status">{currentUser.email}</span>
                 <button className="auth-toggle" onClick={() => setShowDigestSettings((v) => !v)}>
@@ -702,6 +794,38 @@ function App() {
                   Log out
                 </button>
               </>
+            ) : authMode === "forgot" ? (
+              forgotMessage ? (
+                <>
+                  <span className="auth-status">{forgotMessage}</span>
+                  <button
+                    className="auth-toggle"
+                    onClick={() => {
+                      setAuthMode("login");
+                      setForgotMessage(null);
+                    }}
+                  >
+                    Back to login
+                  </button>
+                </>
+              ) : (
+                <form className="unlock-form" onSubmit={handleForgotPassword}>
+                  <input
+                    type="email"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="Email"
+                    autoFocus
+                  />
+                  <button type="submit" disabled={forgotSubmitting}>
+                    {forgotSubmitting ? "…" : "Send reset link"}
+                  </button>
+                  <button type="button" className="auth-toggle" onClick={() => setAuthMode("login")}>
+                    Cancel
+                  </button>
+                  {authError && <span className="auth-error">{authError}</span>}
+                </form>
+              )
             ) : authMode ? (
               <form className="unlock-form" onSubmit={handleAuthSubmit}>
                 <input
@@ -727,6 +851,11 @@ function App() {
                 >
                   {authMode === "login" ? "Need an account?" : "Have an account?"}
                 </button>
+                {authMode === "login" && (
+                  <button type="button" className="auth-toggle" onClick={() => setAuthMode("forgot")}>
+                    Forgot password?
+                  </button>
+                )}
                 <button type="button" className="auth-toggle" onClick={() => setAuthMode(null)}>
                   Cancel
                 </button>
