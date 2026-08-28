@@ -328,6 +328,124 @@ ${sections}
   }
 }
 
+// Best-effort, never throws, same shape as sendDigestEmailForUser — a
+// failed welcome email shouldn't turn a successful signup into a failed
+// one. Sent once, right after signup succeeds (including the claim-an-
+// unclaimed-bootstrap-row path — that's still that user's first real login,
+// so it gets the same welcome). Shares the digest email's visual system
+// (same fonts/colors/masthead shape) but walks through what the site does
+// instead of listing today's matches, since there isn't a feed to show yet.
+async function sendWelcomeEmailForUser(user: User): Promise<boolean> {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) return false;
+
+  try {
+    const siteUrl = process.env.SITE_URL ?? "https://news-digest-web.onrender.com";
+    const iconUrl = `${siteUrl}/email-icon.png`;
+    const SERIF = "Georgia,'Times New Roman',serif";
+    const MONO = "'Courier New',ui-monospace,Menlo,Consolas,monospace";
+
+    const features: { name: string; body: string }[] = [
+      {
+        name: "Add topics",
+        body: "Tell it what you care about — a company, a law, a hobby — and it automatically builds a search feed for it and pulls today's matches right away.",
+      },
+      {
+        name: "Real ranking, not just keyword hits",
+        body: "Every article is scored with TF-IDF (weighted by how rare each of your keywords is across everything ingested), shown as a signal-strength meter. Click or tap it to see exactly which keywords hit.",
+      },
+      {
+        name: "Fetches and emails on your schedule",
+        body: "Pick your own delivery time and timezone under “Digest settings.” A few minutes before it, your topics are freshly fetched and matched, then emailed to you — like this one, once you're set up.",
+      },
+      {
+        name: "Live tickers",
+        body: "Add stock symbols to a sidebar with real-time prices and a 7-day trend line.",
+      },
+      {
+        name: "7-day history",
+        body: "Date pills above your feed let you look back at exactly what matched on any of the last 7 days, not just today.",
+      },
+    ];
+
+    const sections = features
+      .map(
+        (f, i) => `<tr><td style="padding-top:${i === 0 ? 22 : 26}px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+            <tr><td style="font-family:${SERIF};font-weight:bold;font-size:17px;letter-spacing:0.01em;text-transform:uppercase;color:#1c1a15;border-bottom:2px solid #1c1a15;padding-bottom:6px;">${escapeHtml(f.name)}</td></tr>
+          </table>
+          <p style="font-family:${SERIF};font-size:15px;line-height:1.5;color:#1c1a15;margin:10px 0 0;">${escapeHtml(f.body)}</p>
+        </td></tr>`
+      )
+      .join("");
+
+    const html = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Welcome to News Digest</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f1ede2;">
+<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">A quick tour of what News Digest does, now that you've signed up.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background-color:#f1ede2;">
+<tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;border-collapse:collapse;">
+
+<tr><td align="center" style="padding:0 0 14px;">
+  <img src="${iconUrl}" width="40" height="40" alt="" style="display:block;margin:0 auto 10px;border:0;" />
+  <div style="font-family:${MONO};font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#635c4b;margin-bottom:10px;">Welcome Edition</div>
+  <a href="${siteUrl}" style="font-family:${SERIF};font-weight:900;font-size:38px;letter-spacing:-0.01em;text-transform:uppercase;color:#1c1a15;text-decoration:none;">News Digest</a>
+  <div style="font-family:${SERIF};font-style:italic;font-size:15px;color:#635c4b;margin-top:6px;">You're set up, ${escapeHtml(user.email)}.</div>
+</td></tr>
+
+<tr><td style="border-top:3px double #1c1a15;border-bottom:1px solid #1c1a15;padding:8px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td align="left" style="font-family:${MONO};font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#1c1a15;">Vol. I</td>
+    <td align="center" style="font-family:${MONO};font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#a3202f;">&#9679; What You Can Do</td>
+    <td align="right" style="font-family:${MONO};font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#1c1a15;">${features.length} Features</td>
+  </tr></table>
+</td></tr>
+
+${sections}
+
+<tr><td style="padding-top:34px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;"><tr>
+    <td align="center" style="border-top:1px solid #ded2b0;padding-top:20px;">
+      <a href="${siteUrl}" style="font-family:${SERIF};font-weight:bold;font-size:14px;color:#a3202f;text-decoration:none;">Add your first topic &rarr;</a>
+      <div style="font-family:${MONO};font-size:10px;letter-spacing:0.05em;text-transform:uppercase;color:#635c4b;margin-top:10px;">news-digest-web.onrender.com</div>
+    </td>
+  </tr></table>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: process.env.DIGEST_EMAIL_FROM ?? "News Digest <onboarding@resend.dev>",
+        to: [user.email],
+        subject: "Welcome to News Digest",
+        html,
+      }),
+    });
+
+    if (!res.ok) {
+      console.error(`Welcome email failed for user ${user.id}:`, res.status, await res.text().catch(() => ""));
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error(`Welcome email failed for user ${user.id}:`, err);
+    return false;
+  }
+}
+
 function isValidEmail(email: string): boolean {
   // Deliberately loose — just enough to catch obvious typos/garbage, not a
   // full RFC 5322 parser. Real validation is "can they receive the digest
@@ -388,6 +506,12 @@ app.post(
       ]);
       recordAuthSuccess(clientIp(req));
       await respondWithSession(res, existing.id, 200);
+      // Fire-and-forget — don't hold up the signup response on an email
+      // API call. Claiming a pre-existing bootstrap account is still this
+      // user's first real login, so it gets the same welcome as a fresh one.
+      getUserById(existing.id)
+        .then((u) => u && sendWelcomeEmailForUser(u))
+        .catch((err) => console.error("Welcome email lookup failed:", err));
       return;
     }
 
@@ -397,6 +521,9 @@ app.post(
     );
     recordAuthSuccess(clientIp(req));
     await respondWithSession(res, rows[0].id, 201);
+    getUserById(rows[0].id)
+      .then((u) => u && sendWelcomeEmailForUser(u))
+      .catch((err) => console.error("Welcome email lookup failed:", err));
   })
 );
 
