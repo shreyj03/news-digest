@@ -49,6 +49,49 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
+// Reads the real client IP from Cloudflare's cf-connecting-ip header, which
+// sits in front of this in production and sets it authoritatively — a
+// client can't spoof it (confirmed live: Cloudflare's edge itself rejects
+// with an error any request that tries to set this header directly).
+// x-forwarded-for was tried first and is NOT safe for this: also confirmed
+// live, a self-supplied X-Forwarded-For value gets prepended onto the real
+// chain rather than replaced, so trusting its leftmost entry would have let
+// anyone bypass the rate limiter below just by rotating a fake value per
+// request. Falls back to the raw socket address for local dev, where
+// there's no Cloudflare (or any proxy) in front at all.
+function clientIp(req: Request): string {
+  return req.header("cf-connecting-ip") ?? req.socket.remoteAddress ?? "unknown";
+}
+
+// In-memory brute-force guard on SITE_PASSWORD, keyed by client IP — shared
+// between /api/auth and requireSitePassword below, since both are really
+// guessing the same secret and a limit on only one would leave the other
+// wide open. Not persisted: a restart just resets everyone's attempt
+// budget, which is fine for a single-instance personal app; a
+// multi-instance deployment would need this shared (Redis, the DB) instead.
+const AUTH_MAX_ATTEMPTS = 5;
+const AUTH_LOCKOUT_MS = 60_000;
+const authAttempts = new Map<string, { count: number; lockedUntil: number }>();
+
+function authRateLimited(ip: string): boolean {
+  const entry = authAttempts.get(ip);
+  return entry !== undefined && entry.lockedUntil > Date.now();
+}
+
+function recordAuthFailure(ip: string): void {
+  const entry = authAttempts.get(ip) ?? { count: 0, lockedUntil: 0 };
+  entry.count += 1;
+  if (entry.count >= AUTH_MAX_ATTEMPTS) {
+    entry.lockedUntil = Date.now() + AUTH_LOCKOUT_MS;
+    entry.count = 0; // next lockout requires a full fresh run of attempts
+  }
+  authAttempts.set(ip, entry);
+}
+
+function recordAuthSuccess(ip: string): void {
+  authAttempts.delete(ip);
+}
+
 // Gates every mutating topic/ticker route. A no-op locally (SITE_PASSWORD
 // unset) — this only matters once the app is reachable on the public
 // internet, per plan.md's own "add auth if deployed publicly" note.
@@ -58,11 +101,17 @@ function requireSitePassword(req: Request, res: Response, next: NextFunction) {
     next();
     return;
   }
+  if (authRateLimited(clientIp(req))) {
+    res.status(429).json({ error: "Too many attempts. Try again in a minute." });
+    return;
+  }
   const provided = req.header("X-Site-Password");
   if (provided && safeEqual(provided, expected)) {
+    recordAuthSuccess(clientIp(req));
     next();
     return;
   }
+  recordAuthFailure(clientIp(req));
   res.status(401).json({ error: "Site password required." });
 }
 
@@ -243,11 +292,17 @@ app.post("/api/auth", (req, res) => {
     res.json({ ok: true });
     return;
   }
+  if (authRateLimited(clientIp(req))) {
+    res.status(429).json({ error: "Too many attempts. Try again in a minute." });
+    return;
+  }
   const provided = typeof req.body?.password === "string" ? req.body.password : "";
   if (safeEqual(provided, expected)) {
+    recordAuthSuccess(clientIp(req));
     res.json({ ok: true });
     return;
   }
+  recordAuthFailure(clientIp(req));
   res.status(401).json({ error: "Wrong password." });
 });
 
