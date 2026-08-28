@@ -133,37 +133,86 @@ async function sendDigestEmail(): Promise<void> {
       timeZone: "UTC",
     });
 
+    const siteUrl = process.env.SITE_URL ?? "https://news-digest-web.onrender.com";
+    const iconUrl = `${siteUrl}/email-icon.png`;
+    const SERIF = "Georgia,'Times New Roman',serif";
+    const MONO = "'Courier New',ui-monospace,Menlo,Consolas,monospace";
+
     const sections = feed
-      .map((topic) => {
+      .map((topic, topicIndex) => {
         const items = topic.articles
           .slice(0, 5)
-          .map(
-            (a: { url: string; title: string; source: string | null }) =>
-              `<li style="margin-bottom:10px;"><a href="${a.url}" style="color:#1a1a18;text-decoration:none;font-weight:600;">${escapeHtml(a.title)}</a><br><span style="color:#746b58;font-size:12px;">${escapeHtml(a.source ?? "")}</span></li>`
-          )
+          .map((a: { url: string; title: string; source: string | null }, i: number) => {
+            const outlet = extractOutlet(a.title, a.source);
+            const headline = stripOutletSuffix(a.title);
+            const borderTop = i === 0 ? "none" : "1px solid #ded2b0";
+            const padding = i === 0 ? "0 0 14px" : "14px 0";
+            return `<tr><td style="padding:${padding};border-top:${borderTop};">
+              <a href="${a.url}" style="font-family:${SERIF};font-size:16px;line-height:1.35;font-weight:normal;color:#1c1a15;text-decoration:none;">${escapeHtml(headline)}</a>
+              ${outlet ? `<div style="font-family:${MONO};font-size:11px;letter-spacing:0.05em;text-transform:uppercase;color:#635c4b;margin-top:5px;">${escapeHtml(outlet)}</div>` : ""}
+            </td></tr>`;
+          })
           .join("");
         const body =
           topic.articles.length > 0
-            ? `<ul style="list-style:none;padding:0;margin:8px 0 0;">${items}</ul>`
-            : `<p style="color:#746b58;font-style:italic;">No matches today.</p>`;
-        return `<div style="margin-bottom:24px;"><h2 style="font-family:Georgia,serif;font-size:18px;border-bottom:2px solid #1a1a18;padding-bottom:4px;margin:0 0 4px;">${escapeHtml(topic.name)}</h2>${body}</div>`;
+            ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">${items}</table>`
+            : `<p style="font-family:${SERIF};font-style:italic;font-size:14px;color:#635c4b;margin:12px 0 0;">No matches today.</p>`;
+        return `<tr><td style="padding-top:${topicIndex === 0 ? 22 : 30}px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+            <tr><td style="font-family:${SERIF};font-weight:bold;font-size:19px;letter-spacing:0.01em;text-transform:uppercase;color:#1c1a15;border-bottom:2px solid #1c1a15;padding-bottom:6px;">${escapeHtml(topic.name)}</td></tr>
+          </table>
+          ${body}
+        </td></tr>`;
       })
       .join("");
 
-    const siteUrl = process.env.SITE_URL ?? "https://news-digest-web.onrender.com";
+    const topicCountLabel = `${feed.length} Topic${feed.length === 1 ? "" : "s"}`;
+    const preheader = `Today's matches across ${feed.map((t) => t.name).join(", ")}.`;
 
-    const html = `<div style="font-family:Georgia,serif;max-width:600px;margin:0 auto;padding:24px;">
-      <h1 style="text-align:center;font-size:28px;margin-bottom:4px;">
-        <a href="${siteUrl}" style="color:#1a1a18;text-decoration:none;">News Digest</a>
-      </h1>
-      <p style="text-align:center;color:#746b58;font-style:italic;margin-top:0;">${dateLabel}</p>
-      <hr style="border:none;border-top:3px solid #1a1a18;margin:16px 0;" />
-      ${sections}
-      <hr style="border:none;border-top:1px solid #ded2b0;margin:16px 0;" />
-      <p style="text-align:center;">
-        <a href="${siteUrl}" style="color:#a3202f;text-decoration:none;font-size:13px;">View full digest, manage topics, and more →</a>
-      </p>
-    </div>`;
+    const html = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>News Digest — ${dateLabel}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f1ede2;">
+<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">${escapeHtml(preheader)}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background-color:#f1ede2;">
+<tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;border-collapse:collapse;">
+
+<tr><td align="center" style="padding:0 0 14px;">
+  <img src="${iconUrl}" width="40" height="40" alt="" style="display:block;margin:0 auto 10px;border:0;" />
+  <div style="font-family:${MONO};font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#635c4b;margin-bottom:10px;">Est. Daily &mdash; Fresh Every Morning</div>
+  <a href="${siteUrl}" style="font-family:${SERIF};font-weight:900;font-size:38px;letter-spacing:-0.01em;text-transform:uppercase;color:#1c1a15;text-decoration:none;">News Digest</a>
+  <div style="font-family:${SERIF};font-style:italic;font-size:15px;color:#635c4b;margin-top:6px;">${dateLabel}</div>
+</td></tr>
+
+<tr><td style="border-top:3px double #1c1a15;border-bottom:1px solid #1c1a15;padding:8px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td align="left" style="font-family:${MONO};font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#1c1a15;">Vol. I</td>
+    <td align="center" style="font-family:${MONO};font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#a3202f;">&#9679; Today's Edition</td>
+    <td align="right" style="font-family:${MONO};font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#1c1a15;">${topicCountLabel}</td>
+  </tr></table>
+</td></tr>
+
+${sections}
+
+<tr><td style="padding-top:34px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;"><tr>
+    <td align="center" style="border-top:1px solid #ded2b0;padding-top:20px;">
+      <a href="${siteUrl}" style="font-family:${SERIF};font-weight:bold;font-size:14px;color:#a3202f;text-decoration:none;">Read today's full digest &rarr;</a>
+      <div style="font-family:${MONO};font-size:10px;letter-spacing:0.05em;text-transform:uppercase;color:#635c4b;margin-top:10px;">news-digest-web.onrender.com</div>
+    </td>
+  </tr></table>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
 
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -374,6 +423,14 @@ function matchedKeywords(text: string, keywords: string[]): string[] {
 function extractOutlet(title: string, fallback: string | null): string {
   const lastDash = title.lastIndexOf(" - ");
   return lastDash > 0 ? title.slice(lastDash + 3).trim() : (fallback ?? "");
+}
+
+// Same "Headline - Outlet" convention as extractOutlet, the other half of
+// it — used only by the digest email so a headline doesn't show its own
+// outlet twice (once inline, once in the byline underneath).
+function stripOutletSuffix(title: string): string {
+  const lastDash = title.lastIndexOf(" - ");
+  return lastDash > 0 ? title.slice(0, lastDash).trim() : title;
 }
 
 function capBySource<T extends { title: string; source: string | null }>(
