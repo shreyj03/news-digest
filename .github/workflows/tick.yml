@@ -1,0 +1,22 @@
+name: Tick
+
+on:
+  # Every 5 minutes, all day — this is the whole scheduling engine now.
+  # Multi-user means there's no single "everyone's fetch time"; instead
+  # /api/tick checks every user's own digest_time/digest_timezone on each
+  # run and, per user, fetches+matches their own topics ~5 minutes before
+  # their chosen send time, then emails them at it — see DECISIONS.md and
+  # api/src/index.ts's own comments on /api/tick for the full model.
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check every user's schedule and fetch/send whoever's due
+        run: |
+          curl -sf -X POST "${{ secrets.API_URL }}/api/tick" \
+            -H "Authorization: Bearer ${{ secrets.FETCH_SECRET }}" \
+            --max-time 120

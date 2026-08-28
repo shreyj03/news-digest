@@ -6,6 +6,25 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { pool } from "./db.js";
+import {
+  hashPassword,
+  verifyPassword,
+  createSession,
+  deleteSession,
+  getUserBySessionToken,
+  getUserByEmail,
+  getUserById,
+  resolveDemoUserId,
+  type User,
+} from "./auth.js";
+
+declare global {
+  namespace Express {
+    interface Request {
+      userId?: number;
+    }
+  }
+}
 
 const execAsync = promisify(exec);
 // api/src -> api -> project root -> ingest. Resolved from this file's own
@@ -63,12 +82,14 @@ function clientIp(req: Request): string {
   return req.header("cf-connecting-ip") ?? req.socket.remoteAddress ?? "unknown";
 }
 
-// In-memory brute-force guard on SITE_PASSWORD, keyed by client IP — shared
-// between /api/auth and requireSitePassword below, since both are really
-// guessing the same secret and a limit on only one would leave the other
-// wide open. Not persisted: a restart just resets everyone's attempt
-// budget, which is fine for a single-instance personal app; a
-// multi-instance deployment would need this shared (Redis, the DB) instead.
+// In-memory brute-force guard, keyed by client IP — shared between
+// /api/signup and /api/login, since both are password-guessing surfaces
+// (signup for the claim-the-bootstrap-account case). IP-keyed rather than
+// per-account: caps how many password guesses one IP gets across every
+// account it tries, not just one. Not persisted: a restart just resets
+// everyone's attempt budget, which is fine for a single-instance personal
+// app; a multi-instance deployment would need this shared (Redis, the DB)
+// instead.
 const AUTH_MAX_ATTEMPTS = 5;
 const AUTH_LOCKOUT_MS = 60_000;
 const authAttempts = new Map<string, { count: number; lockedUntil: number }>();
@@ -92,27 +113,43 @@ function recordAuthSuccess(ip: string): void {
   authAttempts.delete(ip);
 }
 
-// Gates every mutating topic/ticker route. A no-op locally (SITE_PASSWORD
-// unset) — this only matters once the app is reachable on the public
-// internet, per plan.md's own "add auth if deployed publicly" note.
-function requireSitePassword(req: Request, res: Response, next: NextFunction) {
-  const expected = process.env.SITE_PASSWORD;
-  if (!expected) {
-    next();
+// Gates every mutating topic/ticker route, and the manual "Fetch news"
+// button — replaces the old shared SITE_PASSWORD entirely with real
+// per-user sessions. Reads Authorization: Bearer <session token>, sets
+// req.userId on success.
+function requireAuth(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.header("Authorization");
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : null;
+  if (!token) {
+    res.status(401).json({ error: "Login required." });
     return;
   }
-  if (authRateLimited(clientIp(req))) {
-    res.status(429).json({ error: "Too many attempts. Try again in a minute." });
-    return;
+  getUserBySessionToken(token)
+    .then((user) => {
+      if (!user) {
+        res.status(401).json({ error: "Login required." });
+        return;
+      }
+      req.userId = user.id;
+      next();
+    })
+    .catch(next);
+}
+
+// Read-only routes (topics/feed/tickers) never require login — a valid
+// session scopes them to that user's own data; no session falls back to the
+// configured demo account (read-only, since the mutating routes above still
+// require requireAuth) so anonymous visitors see a real, live example
+// instead of an empty page. Returns null if neither applies (no session and
+// no demo user configured), which callers treat as "show nothing."
+async function resolveViewerUserId(req: Request): Promise<number | null> {
+  const authHeader = req.header("Authorization");
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : null;
+  if (token) {
+    const user = await getUserBySessionToken(token);
+    if (user) return user.id;
   }
-  const provided = req.header("X-Site-Password");
-  if (provided && safeEqual(provided, expected)) {
-    recordAuthSuccess(clientIp(req));
-    next();
-    return;
-  }
-  recordAuthFailure(clientIp(req));
-  res.status(401).json({ error: "Site password required." });
+  return resolveDemoUserId();
 }
 
 // A topic's auto-generated feed is just a Google News search for the
@@ -142,11 +179,13 @@ function lastMeaningfulLine(stdout: string): string {
 // Shells out to the same `npm run ingest`/`npm run match` commands a person
 // would type by hand, rather than importing that logic into the API process
 // — keeps the ingestion pipeline a genuinely separate piece (see
-// DECISIONS.md), whether it's triggered by the "Fetch news" button or by
-// creating/editing a topic.
-async function runIngestAndMatch(): Promise<{ ingest: string; match: string }> {
-  const ingestResult = await execAsync("npm run ingest", { cwd: INGEST_DIR, timeout: 60_000 });
-  const matchResult = await execAsync("npm run match", { cwd: INGEST_DIR, timeout: 60_000 });
+// DECISIONS.md). Always scoped to one user (TARGET_USER_ID) — there's no
+// global mode; every fetch is either the "Fetch news" button (that user) or
+// the scheduled per-user tick (whichever user is due).
+async function runIngestAndMatchForUser(userId: number): Promise<{ ingest: string; match: string }> {
+  const env = { ...process.env, TARGET_USER_ID: String(userId) };
+  const ingestResult = await execAsync("npm run ingest", { cwd: INGEST_DIR, timeout: 60_000, env });
+  const matchResult = await execAsync("npm run match", { cwd: INGEST_DIR, timeout: 60_000, env });
   return {
     ingest: lastMeaningfulLine(ingestResult.stdout),
     match: lastMeaningfulLine(matchResult.stdout),
@@ -161,25 +200,29 @@ function escapeHtml(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
-// Best-effort — a no-op when RESEND_API_KEY/DIGEST_EMAIL_TO aren't set (so
+// Best-effort — a no-op (returns false) when RESEND_API_KEY isn't set (so
 // local dev and anyone who hasn't opted into email are unaffected), and
-// never throws: a failed email shouldn't turn a successful fetch into a
-// failed one. Only called from the scheduled workflow's /api/fetch?email=1,
-// not the manual "Fetch news" button, so clicking that button repeatedly
-// doesn't spam the inbox.
-async function sendDigestEmail(): Promise<void> {
+// never throws: a failed email shouldn't take down the scheduled tick for
+// every other due user. Returns whether it actually sent, so /api/tick only
+// marks a user's last_digest_sent_date on a real success — a transient
+// failure should leave them eligible to retry on the next tick, not get
+// silently marked as "sent today" regardless. Only called from /api/tick
+// for a user whose own chosen delivery time is due — never from the manual
+// "Fetch news" button, so clicking that never spams anyone's inbox. Sends
+// to the user's own account email; there's no separate "recipient"
+// concept — each account gets its own digest.
+async function sendDigestEmailForUser(user: User): Promise<boolean> {
   const apiKey = process.env.RESEND_API_KEY;
-  const to = process.env.DIGEST_EMAIL_TO;
-  if (!apiKey || !to) return;
+  if (!apiKey) return false;
 
   try {
-    const feed = await buildFeed(null);
+    const feed = await buildFeed(null, user.id);
     const dateLabel = new Date().toLocaleDateString("en-US", {
       weekday: "long",
       month: "long",
       day: "numeric",
       year: "numeric",
-      timeZone: "UTC",
+      timeZone: user.digest_timezone,
     });
 
     const siteUrl = process.env.SITE_URL ?? "https://news-digest-web.onrender.com";
@@ -268,49 +311,173 @@ ${sections}
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         from: process.env.DIGEST_EMAIL_FROM ?? "News Digest <onboarding@resend.dev>",
-        to: [to],
+        to: [user.email],
         subject: `News Digest — ${dateLabel}`,
         html,
       }),
     });
 
     if (!res.ok) {
-      console.error("Digest email failed:", res.status, await res.text().catch(() => ""));
+      console.error(`Digest email failed for user ${user.id}:`, res.status, await res.text().catch(() => ""));
+      return false;
     }
+    return true;
   } catch (err) {
-    console.error("Digest email failed:", err);
+    console.error(`Digest email failed for user ${user.id}:`, err);
+    return false;
   }
 }
 
-// Lets the frontend verify a password before storing it in localStorage,
-// rather than storing whatever was typed and finding out it's wrong on the
-// next mutating request.
-app.post("/api/auth", (req, res) => {
-  const expected = process.env.SITE_PASSWORD;
-  if (!expected) {
-    // No password configured (local dev) — nothing to unlock.
-    res.json({ ok: true });
-    return;
-  }
-  if (authRateLimited(clientIp(req))) {
-    res.status(429).json({ error: "Too many attempts. Try again in a minute." });
-    return;
-  }
-  const provided = typeof req.body?.password === "string" ? req.body.password : "";
-  if (safeEqual(provided, expected)) {
+function isValidEmail(email: string): boolean {
+  // Deliberately loose — just enough to catch obvious typos/garbage, not a
+  // full RFC 5322 parser. Real validation is "can they receive the digest
+  // email," which nothing short of actually sending one can confirm.
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+const VALID_TIMEZONES = new Set(Intl.supportedValuesOf("timeZone"));
+
+function isValidTimezone(tz: string): boolean {
+  return VALID_TIMEZONES.has(tz);
+}
+
+function isValidTimeString(time: string): boolean {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(time);
+}
+
+// Creates a session and sends the standard { token, user } signup/login
+// response shape.
+async function respondWithSession(res: Response, userId: number, status: number): Promise<void> {
+  const [token, user] = await Promise.all([createSession(userId), getUserById(userId)]);
+  res.status(status).json({ token, user });
+}
+
+// Signing up with an email that already exists as an unclaimed bootstrap
+// row (password_hash IS NULL — see db/schema.sql and the multi-user
+// migration) claims that row instead of rejecting as a duplicate. This is
+// how the pre-existing owner account's data gets attached to a real login
+// the first time they actually sign up.
+app.post(
+  "/api/signup",
+  asyncRoute(async (req, res) => {
+    if (authRateLimited(clientIp(req))) {
+      res.status(429).json({ error: "Too many attempts. Try again in a minute." });
+      return;
+    }
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!isValidEmail(email)) {
+      res.status(400).json({ error: "A valid email is required." });
+      return;
+    }
+    if (password.length < 8) {
+      res.status(400).json({ error: "Password must be at least 8 characters." });
+      return;
+    }
+
+    const existing = await getUserByEmail(email);
+    if (existing) {
+      if (existing.password_hash !== null) {
+        recordAuthFailure(clientIp(req));
+        res.status(409).json({ error: "An account with that email already exists." });
+        return;
+      }
+      await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [
+        hashPassword(password),
+        existing.id,
+      ]);
+      recordAuthSuccess(clientIp(req));
+      await respondWithSession(res, existing.id, 200);
+      return;
+    }
+
+    const { rows } = await pool.query<{ id: number }>(
+      "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id",
+      [email, hashPassword(password)]
+    );
     recordAuthSuccess(clientIp(req));
-    res.json({ ok: true });
-    return;
-  }
-  recordAuthFailure(clientIp(req));
-  res.status(401).json({ error: "Wrong password." });
-});
+    await respondWithSession(res, rows[0].id, 201);
+  })
+);
+
+app.post(
+  "/api/login",
+  asyncRoute(async (req, res) => {
+    if (authRateLimited(clientIp(req))) {
+      res.status(429).json({ error: "Too many attempts. Try again in a minute." });
+      return;
+    }
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+
+    const user = await getUserByEmail(email);
+    if (!user || user.password_hash === null || !verifyPassword(password, user.password_hash)) {
+      recordAuthFailure(clientIp(req));
+      res.status(401).json({ error: "Incorrect email or password." });
+      return;
+    }
+    recordAuthSuccess(clientIp(req));
+    await respondWithSession(res, user.id, 200);
+  })
+);
+
+app.post(
+  "/api/logout",
+  asyncRoute(async (req, res) => {
+    const authHeader = req.header("Authorization");
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : null;
+    if (token) await deleteSession(token);
+    res.status(204).end();
+  })
+);
+
+// Lets the frontend restore session state on load (does the stored token
+// still work?) without re-sending credentials.
+app.get(
+  "/api/me",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const user = await getUserById(req.userId!);
+    res.json(user);
+  })
+);
+
+app.put(
+  "/api/me/digest",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const digestTime = typeof req.body?.digestTime === "string" ? req.body.digestTime : "";
+    const digestTimezone = typeof req.body?.digestTimezone === "string" ? req.body.digestTimezone : "";
+    const digestEnabled = Boolean(req.body?.digestEnabled);
+
+    if (!isValidTimeString(digestTime)) {
+      res.status(400).json({ error: "digestTime must be in HH:MM (24-hour) format." });
+      return;
+    }
+    if (!isValidTimezone(digestTimezone)) {
+      res.status(400).json({ error: "digestTimezone must be a valid IANA timezone name." });
+      return;
+    }
+
+    await pool.query(
+      "UPDATE users SET digest_time = $1, digest_timezone = $2, digest_enabled = $3 WHERE id = $4",
+      [digestTime, digestTimezone, digestEnabled, req.userId]
+    );
+    res.json(await getUserById(req.userId!));
+  })
+);
 
 app.get(
   "/api/topics",
-  asyncRoute(async (_req, res) => {
+  asyncRoute(async (req, res) => {
+    const viewerId = await resolveViewerUserId(req);
+    if (viewerId === null) {
+      res.json([]);
+      return;
+    }
     const result = await pool.query(
-      "SELECT id, name, keywords, created_at FROM topics ORDER BY id"
+      "SELECT id, name, keywords, created_at FROM topics WHERE user_id = $1 ORDER BY id",
+      [viewerId]
     );
     res.json(result.rows);
   })
@@ -318,7 +485,7 @@ app.get(
 
 app.post(
   "/api/topics",
-  requireSitePassword,
+  requireAuth,
   asyncRoute(async (req, res) => {
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
     const keywords = parseKeywords(req.body?.keywords);
@@ -331,8 +498,8 @@ app.post(
     let topic;
     try {
       const result = await pool.query(
-        "INSERT INTO topics (name, keywords) VALUES ($1, $2) RETURNING id, name, keywords, created_at",
-        [name, keywords]
+        "INSERT INTO topics (user_id, name, keywords) VALUES ($1, $2, $3) RETURNING id, name, keywords, created_at",
+        [req.userId, name, keywords]
       );
       topic = result.rows[0];
     } catch (err) {
@@ -353,7 +520,7 @@ app.post(
         "INSERT INTO feeds (url, name, topic_id) VALUES ($1, $2, $3)",
         [topicFeedUrl(topic.name), `Google News: ${topic.name}`, topic.id]
       );
-      await runIngestAndMatch();
+      await runIngestAndMatchForUser(req.userId!);
     } catch (err) {
       warning = `Topic created, but the first fetch failed: ${
         err instanceof Error ? err.message : "Unknown error"
@@ -366,7 +533,7 @@ app.post(
 
 app.put(
   "/api/topics/:id",
-  requireSitePassword,
+  requireAuth,
   asyncRoute(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
@@ -385,8 +552,8 @@ app.put(
     let topic;
     try {
       const result = await pool.query(
-        "UPDATE topics SET name = $1, keywords = $2 WHERE id = $3 RETURNING id, name, keywords, created_at",
-        [name, keywords, id]
+        "UPDATE topics SET name = $1, keywords = $2 WHERE id = $3 AND user_id = $4 RETURNING id, name, keywords, created_at",
+        [name, keywords, id, req.userId]
       );
       if (result.rowCount === 0) {
         res.status(404).json({ error: "Topic not found." });
@@ -413,7 +580,7 @@ app.put(
          DO UPDATE SET url = EXCLUDED.url, name = EXCLUDED.name`,
         [topicFeedUrl(topic.name), `Google News: ${topic.name}`, topic.id]
       );
-      await runIngestAndMatch();
+      await runIngestAndMatchForUser(req.userId!);
     } catch (err) {
       warning = `Topic updated, but re-fetching its articles failed: ${
         err instanceof Error ? err.message : "Unknown error"
@@ -426,7 +593,7 @@ app.put(
 
 app.delete(
   "/api/topics/:id",
-  requireSitePassword,
+  requireAuth,
   asyncRoute(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
@@ -436,7 +603,7 @@ app.delete(
 
     // topic_articles rows for this topic are removed automatically via
     // ON DELETE CASCADE in the schema.
-    const result = await pool.query("DELETE FROM topics WHERE id = $1", [id]);
+    const result = await pool.query("DELETE FROM topics WHERE id = $1 AND user_id = $2", [id, req.userId]);
     if (result.rowCount === 0) {
       res.status(404).json({ error: "Topic not found." });
       return;
@@ -544,8 +711,11 @@ const ARTICLE_COLUMNS = "a.id, a.title, a.url, a.source, a.summary, a.published_
 
 // Shared by GET /api/feed and the scheduled digest email, so both always
 // agree on what "today's feed" actually looks like.
-async function buildFeed(dateParam: string | null) {
-  const { rows: topics } = await pool.query("SELECT id, name, keywords FROM topics ORDER BY id");
+async function buildFeed(dateParam: string | null, userId: number) {
+  const { rows: topics } = await pool.query(
+    "SELECT id, name, keywords FROM topics WHERE user_id = $1 ORDER BY id",
+    [userId]
+  );
 
   return Promise.all(
     topics.map(async (topic) => {
@@ -608,15 +778,19 @@ app.get(
       return;
     }
 
-    res.json(await buildFeed(dateParam));
+    const viewerId = await resolveViewerUserId(req);
+    if (viewerId === null) {
+      res.json([]);
+      return;
+    }
+    res.json(await buildFeed(dateParam, viewerId));
   })
 );
 
-// /api/fetch has two legitimate callers with two different secrets: the
-// GitHub Actions scheduled workflow (server-to-server, using FETCH_SECRET —
-// a token that's never shipped to the browser) and you, via the "Fetch
-// news" button (using the same site password everything else is gated
-// behind). Either one is accepted; neither implies the other.
+// Machine-to-machine only — the scheduled GitHub Actions tick, using
+// FETCH_SECRET (a token that's never shipped to the browser). No fallback
+// to a user session: /api/tick acts across every due user in one call, not
+// on behalf of whoever happens to be logged in.
 function requireFetchAuth(req: Request, res: Response, next: NextFunction) {
   const fetchSecret = process.env.FETCH_SECRET;
   const authHeader = req.header("Authorization");
@@ -624,28 +798,127 @@ function requireFetchAuth(req: Request, res: Response, next: NextFunction) {
     next();
     return;
   }
-  requireSitePassword(req, res, next);
+  res.status(401).json({ error: "Fetch secret required." });
 }
 
-// Manual, on-demand version of what Milestone 2/3's scripts do by hand.
-// ?email=1 additionally sends the digest email — only the scheduled GitHub
-// Actions workflow passes this, so clicking "Fetch news" in the UI never
-// triggers an email on its own.
+// Manual, on-demand version of what Milestone 2/3's scripts do by hand —
+// always scoped to the logged-in user's own topics. Never sends email;
+// that only ever happens from the scheduled per-user tick below, so
+// clicking this never spams anyone's inbox.
 app.post(
   "/api/fetch",
-  requireFetchAuth,
+  requireAuth,
   asyncRoute(async (req, res) => {
     try {
-      const { ingest, match } = await runIngestAndMatch();
-      if (req.query.email === "1") {
-        await sendDigestEmail();
-      }
+      const { ingest, match } = await runIngestAndMatchForUser(req.userId!);
       res.json({ ok: true, ingest, match });
     } catch (err) {
       const stderr = (err as { stderr?: string })?.stderr;
       const message = stderr?.trim() || (err instanceof Error ? err.message : "Unknown error");
       res.status(502).json({ error: `Fetch failed: ${message}` });
     }
+  })
+);
+
+// Converts an IANA timezone name into that zone's current local HH:MM and
+// YYYY-MM-DD — Intl.DateTimeFormat handles DST correctly on its own, no
+// manual offset math. en-CA's date order is conveniently YYYY-MM-DD.
+function getLocalTimeAndDate(timezone: string): { time: string; date: string } {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+      .formatToParts(new Date())
+      .map((p) => [p.type, p.value])
+  );
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
+}
+
+function minutesSinceMidnight(hhmm: string): number {
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+}
+
+// True if `now` has reached `target` within the last `window` minutes,
+// wrapping correctly across midnight (mod 1440) — e.g. a target of 00:02
+// with a 5-minute pre-fetch offset lands at 23:57 the previous day.
+function withinWindow(nowMinutes: number, targetMinutes: number, windowMinutes: number): boolean {
+  const diff = (((nowMinutes - targetMinutes) % 1440) + 1440) % 1440;
+  return diff < windowMinutes;
+}
+
+// How far apart the pre-send fetch and the send itself are, and how wide a
+// tolerance band each gets around its target — both tied to the tick
+// cadence (every 5 minutes; see .github/workflows/tick.yml), padded a
+// little for GitHub's own scheduler jitter.
+const TICK_PRE_FETCH_MINUTES = 5;
+const TICK_WINDOW_MINUTES = 10;
+
+// The scheduled heart of per-user delivery: every 5 minutes, for every user
+// with digest_enabled, checks whether "now" (in that user's own timezone)
+// has just reached their pre-fetch window (fetch + match their topics only)
+// or their actual send time (build and email their feed) — each gated by
+// last_fetch_date/last_digest_sent_date so a re-trigger within the same
+// local day is a no-op. There's no global ingest left at all; every fetch
+// here is scoped to exactly one user via runIngestAndMatchForUser.
+app.post(
+  "/api/tick",
+  requireFetchAuth,
+  asyncRoute(async (_req, res) => {
+    const { rows: users } = await pool.query<User>(
+      `SELECT id, email, digest_time, digest_timezone, digest_enabled, last_fetch_date, last_digest_sent_date, created_at
+       FROM users WHERE digest_enabled = true`
+    );
+
+    const results: { userId: number; fetched: boolean; sent: boolean; error?: string }[] = [];
+
+    for (const user of users) {
+      const { time: localTime, date: localDate } = getLocalTimeAndDate(user.digest_timezone);
+      const nowMinutes = minutesSinceMidnight(localTime);
+      const sendTargetMinutes = minutesSinceMidnight(user.digest_time);
+      const fetchTargetMinutes = ((sendTargetMinutes - TICK_PRE_FETCH_MINUTES) % 1440 + 1440) % 1440;
+
+      const dueForFetch =
+        withinWindow(nowMinutes, fetchTargetMinutes, TICK_WINDOW_MINUTES) && user.last_fetch_date !== localDate;
+      const dueForSend =
+        withinWindow(nowMinutes, sendTargetMinutes, TICK_WINDOW_MINUTES) &&
+        user.last_digest_sent_date !== localDate;
+
+      if (!dueForFetch && !dueForSend) continue;
+
+      let fetched = false;
+      let sent = false;
+      let error: string | undefined;
+
+      if (dueForFetch) {
+        try {
+          await runIngestAndMatchForUser(user.id);
+          await pool.query("UPDATE users SET last_fetch_date = $1 WHERE id = $2", [localDate, user.id]);
+          fetched = true;
+        } catch (err) {
+          error = `fetch: ${err instanceof Error ? err.message : "unknown error"}`;
+        }
+      }
+
+      if (dueForSend) {
+        sent = await sendDigestEmailForUser(user);
+        if (sent) {
+          await pool.query("UPDATE users SET last_digest_sent_date = $1 WHERE id = $2", [localDate, user.id]);
+        } else {
+          error = error ? `${error}; send failed` : "send failed";
+        }
+      }
+
+      results.push({ userId: user.id, fetched, sent, error });
+    }
+
+    res.json({ ok: true, results });
   })
 );
 
@@ -716,8 +989,16 @@ async function fetchQuote(symbol: string): Promise<Quote> {
 
 app.get(
   "/api/tickers",
-  asyncRoute(async (_req, res) => {
-    const { rows: tickers } = await pool.query("SELECT id, symbol FROM tickers ORDER BY id");
+  asyncRoute(async (req, res) => {
+    const viewerId = await resolveViewerUserId(req);
+    if (viewerId === null) {
+      res.json([]);
+      return;
+    }
+    const { rows: tickers } = await pool.query(
+      "SELECT id, symbol FROM tickers WHERE user_id = $1 ORDER BY id",
+      [viewerId]
+    );
     const withQuotes = await Promise.all(
       tickers.map(async (ticker) => ({ ...ticker, quote: await fetchQuote(ticker.symbol) }))
     );
@@ -727,7 +1008,7 @@ app.get(
 
 app.post(
   "/api/tickers",
-  requireSitePassword,
+  requireAuth,
   asyncRoute(async (req, res) => {
     const symbol = typeof req.body?.symbol === "string" ? req.body.symbol.trim().toUpperCase() : "";
     if (!symbol) {
@@ -745,8 +1026,8 @@ app.post(
 
     try {
       const result = await pool.query(
-        "INSERT INTO tickers (symbol) VALUES ($1) RETURNING id, symbol",
-        [symbol]
+        "INSERT INTO tickers (user_id, symbol) VALUES ($1, $2) RETURNING id, symbol",
+        [req.userId, symbol]
       );
       res.status(201).json({ ...result.rows[0], quote });
     } catch (err) {
@@ -761,7 +1042,7 @@ app.post(
 
 app.delete(
   "/api/tickers/:id",
-  requireSitePassword,
+  requireAuth,
   asyncRoute(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
@@ -769,7 +1050,7 @@ app.delete(
       return;
     }
 
-    const result = await pool.query("DELETE FROM tickers WHERE id = $1", [id]);
+    const result = await pool.query("DELETE FROM tickers WHERE id = $1 AND user_id = $2", [id, req.userId]);
     if (result.rowCount === 0) {
       res.status(404).json({ error: "Ticker not found." });
       return;

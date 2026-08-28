@@ -19,14 +19,32 @@ function normalizeTitle(title: string): string {
 }
 
 async function main() {
+  // Every run is scoped to one user's own topics — there's no global mode.
+  // Set by the API when it shells out to this script (a specific user's
+  // "Fetch news" click, or the scheduled per-user tick); required, not
+  // optional, so a stray un-scoped invocation can't silently touch
+  // everyone's feeds.
+  const targetUserId = process.env.TARGET_USER_ID;
+  if (!targetUserId || !/^\d+$/.test(targetUserId)) {
+    console.error("TARGET_USER_ID env var (a numeric user id) is required.");
+    process.exit(1);
+  }
+
   const { rows: feeds } = await pool.query<{
     id: number;
     url: string;
     name: string;
-  }>("SELECT id, url, name FROM feeds ORDER BY id");
+  }>(
+    `SELECT f.id, f.url, f.name
+     FROM feeds f
+     JOIN topics t ON t.id = f.topic_id
+     WHERE t.user_id = $1
+     ORDER BY f.id`,
+    [targetUserId]
+  );
 
   if (feeds.length === 0) {
-    console.log("No feeds in the `feeds` table — nothing to ingest.");
+    console.log("No feeds for this user — nothing to ingest.");
     await pool.end();
     return;
   }

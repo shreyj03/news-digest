@@ -3,7 +3,7 @@ import "./App.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3001";
 const TICKER_REFRESH_MS = 60_000;
-const SITE_PASSWORD_KEY = "news-digest-site-password";
+const AUTH_TOKEN_KEY = "news-digest-auth-token";
 
 interface Article {
   id: number;
@@ -38,6 +38,14 @@ interface Ticker {
   id: number;
   symbol: string;
   quote: Quote;
+}
+
+interface CurrentUser {
+  id: number;
+  email: string;
+  digest_time: string;
+  digest_timezone: string;
+  digest_enabled: boolean;
 }
 
 function parseKeywordsInput(input: string): string[] {
@@ -172,7 +180,13 @@ function Sparkline({ history }: { history: number[] }) {
   );
 }
 
-function TickerRow({ ticker, onRemove }: { ticker: Ticker; onRemove: (id: number) => void }) {
+function TickerRow({
+  ticker,
+  onRemove,
+}: {
+  ticker: Ticker;
+  onRemove?: (id: number) => void;
+}) {
   const { quote } = ticker;
   const isUp = (quote.change ?? 0) >= 0;
 
@@ -180,13 +194,15 @@ function TickerRow({ ticker, onRemove }: { ticker: Ticker; onRemove: (id: number
     <div className="ticker-row">
       <div className="ticker-top">
         <span className="ticker-symbol">{ticker.symbol}</span>
-        <button
-          className="ticker-remove"
-          onClick={() => onRemove(ticker.id)}
-          aria-label={`Stop watching ${ticker.symbol}`}
-        >
-          ×
-        </button>
+        {onRemove && (
+          <button
+            className="ticker-remove"
+            onClick={() => onRemove(ticker.id)}
+            aria-label={`Stop watching ${ticker.symbol}`}
+          >
+            ×
+          </button>
+        )}
       </div>
       {quote.error || quote.price === null ? (
         <span className="ticker-unavailable">Price unavailable</span>
@@ -206,6 +222,7 @@ function TickerRow({ ticker, onRemove }: { ticker: Ticker; onRemove: (id: number
 function App() {
   const [feed, setFeed] = useState<TopicFeed[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [feedLoaded, setFeedLoaded] = useState(false);
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
@@ -244,69 +261,181 @@ function App() {
     return () => document.removeEventListener("click", closeOnOutsideClick);
   }, []);
 
-  // Site password — only meaningful once deployed with SITE_PASSWORD set;
-  // /api/auth is a no-op success locally, so this stays effectively unused
-  // in local dev.
-  const [sitePassword, setSitePassword] = useState<string | null>(() =>
-    localStorage.getItem(SITE_PASSWORD_KEY)
-  );
-  const [showUnlock, setShowUnlock] = useState(false);
-  const [passwordInput, setPasswordInput] = useState("");
-  const [unlocking, setUnlocking] = useState(false);
+  // Per-user account state — replaces the old shared SITE_PASSWORD model
+  // entirely. No token/no valid session = viewing the read-only demo (the
+  // account GET routes fall back to server-side); a valid session scopes
+  // everything to that user's own topics/tickers.
+  const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem(AUTH_TOKEN_KEY));
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "signup" | null>(null);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  function authHeaders(): Record<string, string> {
-    return sitePassword ? { "X-Site-Password": sitePassword } : {};
+  const [showDigestSettings, setShowDigestSettings] = useState(false);
+  const [digestTime, setDigestTime] = useState("07:00");
+  const [digestTimezone, setDigestTimezone] = useState("America/Los_Angeles");
+  const [digestEnabled, setDigestEnabled] = useState(true);
+  const [savingDigest, setSavingDigest] = useState(false);
+  const [digestError, setDigestError] = useState<string | null>(null);
+
+  // Accepts an optional override so callers that just changed the token
+  // (login/signup/logout) can use the fresh value immediately — setAuthToken
+  // is async, so a call made in the same handler would otherwise still read
+  // the stale value from this render's closure.
+  function authHeaders(tokenOverride?: string | null): Record<string, string> {
+    const token = tokenOverride !== undefined ? tokenOverride : authToken;
+    return token ? { Authorization: `Bearer ${token}` } : {};
   }
 
-  // Shared 401 handling for every mutating call below: the stored password
-  // (if any) turned out to be wrong or missing, so drop it and ask again
-  // rather than silently failing.
-  function handleLocked() {
-    localStorage.removeItem(SITE_PASSWORD_KEY);
-    setSitePassword(null);
-    setShowUnlock(true);
-    setAuthError("Locked — enter the site password to make changes.");
+  function clearAuth() {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    setAuthToken(null);
+    setCurrentUser(null);
   }
 
-  async function handleUnlock(e: FormEvent<HTMLFormElement>) {
+  // Shared 401 handling for every mutating call below: the stored session
+  // (if any) turned out to be invalid or expired, so drop it and fall back
+  // to the demo view rather than silently failing.
+  function handleUnauthorized() {
+    clearAuth();
+    setAuthMode("login");
+    setAuthError("Session expired — please log in again.");
+  }
+
+  // Restores a session from a stored token on load (does it still work?),
+  // and — separately — fetches the digest settings form's own initial state
+  // once a user is confirmed. A stale/invalid token just falls back to the
+  // demo view rather than erroring.
+  useEffect(() => {
+    if (!authToken) {
+      setAuthChecked(true);
+      return;
+    }
+    fetch(`${API_BASE}/api/me`, { headers: authHeaders() })
+      .then((res) => {
+        if (!res.ok) throw new Error("invalid session");
+        return res.json();
+      })
+      .then((user: CurrentUser) => {
+        setCurrentUser(user);
+        setDigestTime(user.digest_time.slice(0, 5));
+        setDigestTimezone(user.digest_timezone);
+        setDigestEnabled(user.digest_enabled);
+      })
+      .catch(() => clearAuth())
+      .finally(() => setAuthChecked(true));
+    // Only re-run if the token itself changes (login/logout) — not on every
+    // render, and not keyed to authHeaders() which is a new object each time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authToken]);
+
+  async function handleAuthSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (!authMode) return;
     setAuthError(null);
-    setUnlocking(true);
+    setAuthSubmitting(true);
     try {
-      const res = await fetch(`${API_BASE}/api/auth`, {
+      const res = await fetch(`${API_BASE}/api/${authMode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: passwordInput }),
+        body: JSON.stringify({ email: authEmail, password: authPassword }),
       });
+      const body = await res.json().catch(() => null);
       if (!res.ok) {
-        setAuthError("Wrong password.");
+        setAuthError(body?.error ?? `${authMode === "login" ? "Login" : "Sign up"} failed.`);
         return;
       }
-      localStorage.setItem(SITE_PASSWORD_KEY, passwordInput);
-      setSitePassword(passwordInput);
-      setPasswordInput("");
-      setShowUnlock(false);
+
+      localStorage.setItem(AUTH_TOKEN_KEY, body.token);
+      setAuthToken(body.token);
+      setCurrentUser(body.user);
+      setDigestTime(body.user.digest_time.slice(0, 5));
+      setDigestEnabled(body.user.digest_enabled);
+      setAuthEmail("");
+      setAuthPassword("");
+      setAuthMode(null);
+
+      // New accounts start on the DB's blanket default timezone
+      // (America/Los_Angeles) — nudge it to whatever the browser itself
+      // reports right away, a much more likely-correct starting point than
+      // a fixed default, without asking during signup itself.
+      if (authMode === "signup") {
+        const detectedTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        setDigestTimezone(detectedTz);
+        fetch(`${API_BASE}/api/me/digest`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${body.token}` },
+          body: JSON.stringify({
+            digestTime: body.user.digest_time.slice(0, 5),
+            digestTimezone: detectedTz,
+            digestEnabled: body.user.digest_enabled,
+          }),
+        }).catch(() => {
+          // Best-effort — the account still works fine with the DB default.
+        });
+      } else {
+        setDigestTimezone(body.user.digest_timezone);
+      }
+
+      loadFeed(selectedDate, body.token);
+      loadTickers(body.token);
     } catch {
       setAuthError("Couldn't reach the API.");
     } finally {
-      setUnlocking(false);
+      setAuthSubmitting(false);
     }
   }
 
-  function handleLock() {
-    localStorage.removeItem(SITE_PASSWORD_KEY);
-    setSitePassword(null);
+  async function handleLogout() {
+    fetch(`${API_BASE}/api/logout`, { method: "POST", headers: authHeaders() }).catch(() => {
+      // Logging out locally is what matters — a failed server-side delete
+      // just means the token expires on its own later.
+    });
+    clearAuth();
+    loadFeed(selectedDate, null);
+    loadTickers(null);
   }
 
-  function loadFeed(date: string | null = selectedDate) {
+  async function handleSaveDigest(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setDigestError(null);
+    setSavingDigest(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/me/digest`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ digestTime, digestTimezone, digestEnabled }),
+      });
+      const body = await res.json().catch(() => null);
+      if (res.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      if (!res.ok) {
+        setDigestError(body?.error ?? `Failed to save (${res.status})`);
+        return;
+      }
+      setCurrentUser(body);
+      setShowDigestSettings(false);
+    } finally {
+      setSavingDigest(false);
+    }
+  }
+
+  function loadFeed(date: string | null = selectedDate, tokenOverride?: string | null) {
     const url = date ? `${API_BASE}/api/feed?date=${date}` : `${API_BASE}/api/feed`;
-    fetch(url)
+    fetch(url, { headers: authHeaders(tokenOverride) })
       .then((res) => {
         if (!res.ok) throw new Error(`API returned ${res.status}`);
         return res.json();
       })
-      .then(setFeed)
+      .then((data) => {
+        setFeed(data);
+        setFeedLoaded(true);
+      })
       .catch((err) => setError(err.message));
   }
 
@@ -317,8 +446,8 @@ function App() {
     loadFeed(next);
   }
 
-  function loadTickers() {
-    fetch(`${API_BASE}/api/tickers`)
+  function loadTickers(tokenOverride?: string | null) {
+    fetch(`${API_BASE}/api/tickers`, { headers: authHeaders(tokenOverride) })
       .then((res) => {
         if (!res.ok) throw new Error(`API returned ${res.status}`);
         return res.json();
@@ -335,6 +464,7 @@ function App() {
     loadTickers();
     const interval = setInterval(loadTickers, TICKER_REFRESH_MS);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleAddTopic(e: FormEvent<HTMLFormElement>) {
@@ -356,7 +486,7 @@ function App() {
       const body = await res.json().catch(() => null);
 
       if (res.status === 401) {
-        handleLocked();
+        handleUnauthorized();
         return;
       }
       if (!res.ok) {
@@ -397,7 +527,7 @@ function App() {
       const body = await res.json().catch(() => null);
 
       if (res.status === 401) {
-        handleLocked();
+        handleUnauthorized();
         return;
       }
       if (!res.ok) {
@@ -438,7 +568,7 @@ function App() {
       const body = await res.json().catch(() => null);
 
       if (res.status === 401) {
-        handleLocked();
+        handleUnauthorized();
         return;
       }
       if (!res.ok) {
@@ -467,7 +597,7 @@ function App() {
     setConfirmDeleteId(null);
 
     if (res.status === 401) {
-      handleLocked();
+      handleUnauthorized();
       return;
     }
     if (!res.ok) {
@@ -494,7 +624,7 @@ function App() {
       const body = await res.json().catch(() => null);
 
       if (res.status === 401) {
-        handleLocked();
+        handleUnauthorized();
         return;
       }
       if (!res.ok) {
@@ -515,11 +645,13 @@ function App() {
       headers: authHeaders(),
     });
     if (res.status === 401) {
-      handleLocked();
+      handleUnauthorized();
       return;
     }
     if (res.ok) loadTickers();
   }
+
+  const timezoneOptions = Intl.supportedValuesOf("timeZone");
 
   return (
     <div className="page">
@@ -529,14 +661,20 @@ function App() {
           <p className="tagline">Your topics, matched against fresh articles every morning.</p>
           <div className="dateline">
             <span className="date">{todayLabel}</span>
-            <span className="fetch-status">
-              {fetching
-                ? "Fetching…"
-                : (fetchStatus ?? "Pulls fresh articles, then re-scores every topic.")}
-            </span>
-            <button onClick={handleFetchNews} disabled={fetching}>
-              {fetching ? "Fetching…" : "Fetch news"}
-            </button>
+            {currentUser ? (
+              <>
+                <span className="fetch-status">
+                  {fetching
+                    ? "Fetching…"
+                    : (fetchStatus ?? "Pulls fresh articles, then re-scores your topics.")}
+                </span>
+                <button onClick={handleFetchNews} disabled={fetching}>
+                  {fetching ? "Fetching…" : "Refresh my feed"}
+                </button>
+              </>
+            ) : (
+              <span className="fetch-status">Live example — sign up to build your own.</span>
+            )}
           </div>
           <div className="date-picker">
             {dateOptions.map((day) => {
@@ -554,62 +692,126 @@ function App() {
             })}
           </div>
           <div className="auth-row">
-            {sitePassword ? (
+            {!authChecked ? null : currentUser ? (
               <>
-                <span className="auth-status">Unlocked</span>
-                <button className="auth-toggle" onClick={handleLock}>
-                  Lock
+                <span className="auth-status">{currentUser.email}</span>
+                <button className="auth-toggle" onClick={() => setShowDigestSettings((v) => !v)}>
+                  Digest settings
+                </button>
+                <button className="auth-toggle" onClick={handleLogout}>
+                  Log out
                 </button>
               </>
-            ) : showUnlock ? (
-              <form className="unlock-form" onSubmit={handleUnlock}>
+            ) : authMode ? (
+              <form className="unlock-form" onSubmit={handleAuthSubmit}>
                 <input
-                  type="password"
-                  value={passwordInput}
-                  onChange={(e) => setPasswordInput(e.target.value)}
-                  placeholder="Site password"
+                  type="email"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  placeholder="Email"
                   autoFocus
                 />
-                <button type="submit" disabled={unlocking}>
-                  {unlocking ? "Checking…" : "Unlock"}
+                <input
+                  type="password"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="Password"
+                />
+                <button type="submit" disabled={authSubmitting}>
+                  {authSubmitting ? "…" : authMode === "login" ? "Log in" : "Sign up"}
                 </button>
-                <button type="button" className="auth-toggle" onClick={() => setShowUnlock(false)}>
+                <button
+                  type="button"
+                  className="auth-toggle"
+                  onClick={() => setAuthMode(authMode === "login" ? "signup" : "login")}
+                >
+                  {authMode === "login" ? "Need an account?" : "Have an account?"}
+                </button>
+                <button type="button" className="auth-toggle" onClick={() => setAuthMode(null)}>
                   Cancel
                 </button>
                 {authError && <span className="auth-error">{authError}</span>}
               </form>
             ) : (
-              <button className="auth-toggle" onClick={() => setShowUnlock(true)}>
-                Unlock to edit
-              </button>
+              <>
+                <span className="demo-banner">You're viewing a demo.</span>
+                <button className="auth-toggle" onClick={() => setAuthMode("signup")}>
+                  Sign up
+                </button>
+                <button className="auth-toggle" onClick={() => setAuthMode("login")}>
+                  Log in
+                </button>
+              </>
             )}
           </div>
+          {currentUser && showDigestSettings && (
+            <form className="digest-settings" onSubmit={handleSaveDigest}>
+              <label>
+                Send my digest at
+                <input
+                  type="time"
+                  value={digestTime}
+                  onChange={(e) => setDigestTime(e.target.value)}
+                />
+              </label>
+              <label>
+                in
+                <select value={digestTimezone} onChange={(e) => setDigestTimezone(e.target.value)}>
+                  {timezoneOptions.map((tz) => (
+                    <option key={tz} value={tz}>
+                      {tz}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="digest-enabled">
+                <input
+                  type="checkbox"
+                  checked={digestEnabled}
+                  onChange={(e) => setDigestEnabled(e.target.checked)}
+                />
+                Email me a daily digest
+              </label>
+              <button type="submit" disabled={savingDigest}>
+                {savingDigest ? "Saving…" : "Save"}
+              </button>
+              {digestError && <p className="error">{digestError}</p>}
+            </form>
+          )}
         </header>
 
-        <section className="add-topic">
-          <h2>Add a topic</h2>
-          <form onSubmit={handleAddTopic}>
-            <input
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="Topic name"
-            />
-            <input
-              value={newKeywords}
-              onChange={(e) => setNewKeywords(e.target.value)}
-              placeholder="Keywords, comma separated"
-            />
-            <button type="submit" disabled={addingTopic}>
-              {addingTopic ? "Adding…" : "Add topic"}
-            </button>
-            {formError && <p className="error">{formError}</p>}
-          </form>
-          <p className="hint">
-            We'll search Google News for this topic's name and pull today's matches right away.
-          </p>
-        </section>
+        {currentUser && (
+          <section className="add-topic">
+            <h2>Add a topic</h2>
+            <form onSubmit={handleAddTopic}>
+              <input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Topic name"
+              />
+              <input
+                value={newKeywords}
+                onChange={(e) => setNewKeywords(e.target.value)}
+                placeholder="Keywords, comma separated"
+              />
+              <button type="submit" disabled={addingTopic}>
+                {addingTopic ? "Adding…" : "Add topic"}
+              </button>
+              {formError && <p className="error">{formError}</p>}
+            </form>
+            <p className="hint">
+              We'll search Google News for this topic's name and pull today's matches right away.
+            </p>
+          </section>
+        )}
 
         {error && <p className="page-error">{error}</p>}
+
+        {feedLoaded && currentUser && feed.length === 0 && (
+          <p className="empty-account">
+            You don't have any topics yet — add one above to start your feed.
+          </p>
+        )}
 
         <div className="topics-grid">
           {feed.map((topic) => {
@@ -654,15 +856,17 @@ function App() {
                         )}
                       </p>
                     </div>
-                    <div className="topic-actions">
-                      <button onClick={() => startEdit(topic)}>Edit</button>
-                      <button onClick={() => handleDeleteClick(topic.id)} className="danger">
-                        {confirmDeleteId === topic.id ? "Confirm delete" : "Delete"}
-                      </button>
-                      {confirmDeleteId === topic.id && (
-                        <button onClick={() => setConfirmDeleteId(null)}>Cancel</button>
-                      )}
-                    </div>
+                    {currentUser && (
+                      <div className="topic-actions">
+                        <button onClick={() => startEdit(topic)}>Edit</button>
+                        <button onClick={() => handleDeleteClick(topic.id)} className="danger">
+                          {confirmDeleteId === topic.id ? "Confirm delete" : "Delete"}
+                        </button>
+                        {confirmDeleteId === topic.id && (
+                          <button onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -719,20 +923,24 @@ function App() {
         <h2>Tickers</h2>
         <div className="ticker-list">
           {tickers.map((ticker) => (
-            <TickerRow key={ticker.id} ticker={ticker} onRemove={handleRemoveTicker} />
+            <TickerRow key={ticker.id} ticker={ticker} onRemove={currentUser ? handleRemoveTicker : undefined} />
           ))}
         </div>
-        <form className="add-ticker" onSubmit={handleAddTicker}>
-          <input
-            value={newTicker}
-            onChange={(e) => setNewTicker(e.target.value)}
-            placeholder="Symbol, e.g. AAPL"
-          />
-          <button type="submit" disabled={addingTicker}>
-            {addingTicker ? "Adding…" : "Add"}
-          </button>
-        </form>
-        {tickerError && <p className="error">{tickerError}</p>}
+        {currentUser && (
+          <>
+            <form className="add-ticker" onSubmit={handleAddTicker}>
+              <input
+                value={newTicker}
+                onChange={(e) => setNewTicker(e.target.value)}
+                placeholder="Symbol, e.g. AAPL"
+              />
+              <button type="submit" disabled={addingTicker}>
+                {addingTicker ? "Adding…" : "Add"}
+              </button>
+            </form>
+            {tickerError && <p className="error">{tickerError}</p>}
+          </>
+        )}
       </aside>
     </div>
   );

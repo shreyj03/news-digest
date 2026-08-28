@@ -12,12 +12,11 @@ services:
         sync: false
       - key: FETCH_SECRET
         sync: false
-      - key: SITE_PASSWORD
+      # The account whose data anonymous visitors see as a read-only demo.
+      - key: DEMO_USER_EMAIL
         sync: false
-      # Optional — the morning digest email is a no-op until both are set.
+      # Optional — each user's own digest email is a no-op until this is set.
       - key: RESEND_API_KEY
-        sync: false
-      - key: DIGEST_EMAIL_TO
         sync: false
       # Optional — the link the digest email points back to. Defaults to
       # this project's own deployed frontend URL if unset; set this when

@@ -29,15 +29,28 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 async function main() {
+  // Scoped to one user's own topics (see ingest.ts for why this is
+  // required, not optional). The article corpus itself stays global on
+  // purpose: it's TF-IDF'd against the *entire* shared pool, not just
+  // articles this user's own feeds happened to bring in, both for better
+  // IDF statistics and so a user benefits from other users' feeds
+  // surfacing a story theirs didn't.
+  const targetUserId = process.env.TARGET_USER_ID;
+  if (!targetUserId || !/^\d+$/.test(targetUserId)) {
+    console.error("TARGET_USER_ID env var (a numeric user id) is required.");
+    process.exit(1);
+  }
+
   const { rows: topics } = await pool.query<Topic>(
-    "SELECT id, name, keywords FROM topics ORDER BY id"
+    "SELECT id, name, keywords FROM topics WHERE user_id = $1 ORDER BY id",
+    [targetUserId]
   );
   const { rows: articles } = await pool.query<Article>(
     "SELECT id, title, summary FROM articles ORDER BY id"
   );
 
   if (topics.length === 0 || articles.length === 0) {
-    console.log("No topics or no articles — nothing to match.");
+    console.log("No topics for this user, or no articles at all — nothing to match.");
     await pool.end();
     return;
   }
@@ -93,11 +106,14 @@ async function main() {
   // Full recompute inside a transaction rather than upserting on top of
   // whatever's already there: a keyword edit or a scoring fix (like this
   // one) can make a previously-stored match no longer qualify, and an
-  // upsert-only pass would leave that stale row behind forever.
+  // upsert-only pass would leave that stale row behind forever. Scoped to
+  // this user's own topic ids — a blanket DELETE FROM topic_articles here
+  // would wipe every other user's matches too, not just this run's.
+  const topicIds = topics.map((t) => t.id);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("DELETE FROM topic_articles");
+    await client.query("DELETE FROM topic_articles WHERE topic_id = ANY($1::int[])", [topicIds]);
 
     for (const topic of topics) {
       for (const article of articles) {
