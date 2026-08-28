@@ -4,6 +4,17 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-28 — Email provider: Resend → Brevo
+
+**Decision:** Replaced Resend with Brevo for both the digest and welcome emails. `sendDigestEmailForUser`/`sendWelcomeEmailForUser` now go through one shared `sendEmail(to, subject, html)` helper calling Brevo's `POST https://api.brevo.com/v3/smtp/email` (auth via an `api-key` header, not `Authorization: Bearer`; body is `{ sender: { name, email }, to: [{ email }], subject, htmlContent }`). Env vars changed from `RESEND_API_KEY` to `BREVO_API_KEY` + `DIGEST_EMAIL_FROM` (both now required together — `DIGEST_EMAIL_FROM` must be exactly the address verified as a sender in Brevo's dashboard).
+
+**Why:** Resend's free tier only delivers from an unverified sender (`onboarding@resend.dev`) to the Resend account's own exact email — confirmed live, mid-multi-user-build: even `jainshrey2004+test@gmail.com` (same inbox as the account owner via Gmail's plus-addressing) was rejected with a 403 "not your own address." That's a hard blocker for a multi-user app — every real user besides the account owner would silently never receive email (both functions fail closed by design, so this wouldn't surface as an error, just as "nothing arrived"). Brevo's free tier (300/day) instead lets a single *verified sender email* — confirmed by entering a code Brevo emails to it, no owned domain or DNS required — send to any recipient. That's the actual requirement here, not "send more emails for free."
+
+**Alternatives considered:**
+- Verify a domain on Resend instead of switching providers — rejected as the default path since it requires owning a domain, which the plan shouldn't assume; switching to a provider whose free tier doesn't require one keeps the "free, no extra infrastructure" bar the rest of this project has held to. Domain verification on Resend remains an option later if a real domain is ever set up for other reasons.
+- Amazon SES — rejected: same sandbox-until-approved restriction as Resend (every recipient must be individually verified until AWS grants "production access," a manual review), and not actually free (~$0.10/1,000 emails), just very cheap.
+- SendGrid/Mailjet — same single-sender-verification model as Brevo and would have worked equally well; Brevo chosen for its more generous free daily limit (300 vs. SendGrid's 100) and because SendGrid's free tier has reportedly become less consistently available since its full migration under Twilio.
+
 ## 2026-08-28 — Multi-user accounts, demo mode, and per-user fetch-then-send scheduling
 
 **Decision:** Replaced the single shared `SITE_PASSWORD` model with real per-user accounts (email + scrypt-hashed password, DB-backed bearer sessions in a new `sessions` table — not JWT, no new dependency, revocable by deleting a row). `topics`/`tickers` gained `user_id` and switched their unique constraints from global to `(user_id, name)`/`(user_id, symbol)`. Anonymous visitors see a configured `DEMO_USER_EMAIL` account's data read-only rather than an empty or locked page. The existing live data was attached to a pre-created, unclaimed (`password_hash IS NULL`) owner row that the real signup flow "claims" (sets a password on it) instead of rejecting as a duplicate email — the same bootstrap/claim mechanism local dev's seed data now uses too, so there's one flow, not two.

@@ -200,7 +200,44 @@ function escapeHtml(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
-// Best-effort — a no-op (returns false) when RESEND_API_KEY isn't set (so
+// Shared low-level sender for both digest and welcome emails. Brevo, not
+// Resend (see DECISIONS.md): Resend's free tier is sandboxed to only send
+// to the Resend account's own email until a domain is verified, which broke
+// as soon as this app went multi-user — confirmed live, even a Gmail
+// plus-address pointing at the same inbox was rejected. Brevo's free tier
+// lets a single *verified sender email* (no owned domain needed — just
+// confirm a code sent to that address) send to any recipient, which is
+// what multi-user actually needs. `DIGEST_EMAIL_FROM` must be exactly that
+// verified sender address; there's no safe generic fallback the way
+// Resend's shared onboarding@resend.dev was, so both are required together.
+async function sendEmail(to: string, subject: string, html: string): Promise<boolean> {
+  const apiKey = process.env.BREVO_API_KEY;
+  const fromEmail = process.env.DIGEST_EMAIL_FROM;
+  if (!apiKey || !fromEmail) return false;
+
+  try {
+    const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: { "api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        sender: { name: "News Digest", email: fromEmail },
+        to: [{ email: to }],
+        subject,
+        htmlContent: html,
+      }),
+    });
+    if (!res.ok) {
+      console.error(`Email to ${to} failed:`, res.status, await res.text().catch(() => ""));
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error(`Email to ${to} failed:`, err);
+    return false;
+  }
+}
+
+// Best-effort — a no-op (returns false) when BREVO_API_KEY isn't set (so
 // local dev and anyone who hasn't opted into email are unaffected), and
 // never throws: a failed email shouldn't take down the scheduled tick for
 // every other due user. Returns whether it actually sent, so /api/tick only
@@ -212,8 +249,7 @@ function escapeHtml(text: string): string {
 // to the user's own account email; there's no separate "recipient"
 // concept — each account gets its own digest.
 async function sendDigestEmailForUser(user: User): Promise<boolean> {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) return false;
+  if (!process.env.BREVO_API_KEY || !process.env.DIGEST_EMAIL_FROM) return false;
 
   try {
     const feed = await buildFeed(null, user.id);
@@ -306,22 +342,7 @@ ${sections}
 </body>
 </html>`;
 
-    const res = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from: process.env.DIGEST_EMAIL_FROM ?? "News Digest <onboarding@resend.dev>",
-        to: [user.email],
-        subject: `News Digest — ${dateLabel}`,
-        html,
-      }),
-    });
-
-    if (!res.ok) {
-      console.error(`Digest email failed for user ${user.id}:`, res.status, await res.text().catch(() => ""));
-      return false;
-    }
-    return true;
+    return await sendEmail(user.email, `News Digest — ${dateLabel}`, html);
   } catch (err) {
     console.error(`Digest email failed for user ${user.id}:`, err);
     return false;
@@ -336,8 +357,7 @@ ${sections}
 // (same fonts/colors/masthead shape) but walks through what the site does
 // instead of listing today's matches, since there isn't a feed to show yet.
 async function sendWelcomeEmailForUser(user: User): Promise<boolean> {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) return false;
+  if (!process.env.BREVO_API_KEY || !process.env.DIGEST_EMAIL_FROM) return false;
 
   try {
     const siteUrl = process.env.SITE_URL ?? "https://news-digest-web.onrender.com";
@@ -424,22 +444,7 @@ ${sections}
 </body>
 </html>`;
 
-    const res = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from: process.env.DIGEST_EMAIL_FROM ?? "News Digest <onboarding@resend.dev>",
-        to: [user.email],
-        subject: "Welcome to News Digest",
-        html,
-      }),
-    });
-
-    if (!res.ok) {
-      console.error(`Welcome email failed for user ${user.id}:`, res.status, await res.text().catch(() => ""));
-      return false;
-    }
-    return true;
+    return await sendEmail(user.email, "Welcome to News Digest", html);
   } catch (err) {
     console.error(`Welcome email failed for user ${user.id}:`, err);
     return false;

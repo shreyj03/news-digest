@@ -15,8 +15,16 @@ services:
       # The account whose data anonymous visitors see as a read-only demo.
       - key: DEMO_USER_EMAIL
         sync: false
-      # Optional — each user's own digest email is a no-op until this is set.
-      - key: RESEND_API_KEY
+      # Optional together — welcome/digest email is a no-op until BOTH are
+      # set. Brevo (not Resend — see DECISIONS.md): a single verified sender
+      # email, no owned domain required, can send to any recipient on
+      # Brevo's free tier, which multi-user actually needs.
+      - key: BREVO_API_KEY
+        sync: false
+      # Must be exactly the email address verified as a sender in Brevo
+      # (Senders, Domains & Dedicated IPs → Senders) — there's no safe
+      # generic fallback the way Resend's shared onboarding@resend.dev was.
+      - key: DIGEST_EMAIL_FROM
         sync: false
       # Optional — the link the digest email points back to. Defaults to
       # this project's own deployed frontend URL if unset; set this when
