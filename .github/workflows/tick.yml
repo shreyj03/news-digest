@@ -1,14 +1,19 @@
 name: Tick
 
 on:
-  # Every 5 minutes, all day — this is the whole scheduling engine now.
+  # No `schedule` trigger here on purpose — GitHub Actions' schedule event
+  # is documented to get silently deprioritized/dropped under load for
+  # high-frequency (*/5) crons, and in practice fired once in 22 hours on
+  # this repo, missing every user's send window. cron-job.org (free, hits
+  # this same endpoint via HTTP) is the real trigger now — see DECISIONS.md
+  # (2026-08-28, "Tick scheduling: GitHub Actions schedule -> cron-job.org").
+  # workflow_dispatch kept for manual/ad-hoc runs.
+  #
   # Multi-user means there's no single "everyone's fetch time"; instead
   # /api/tick checks every user's own digest_time/digest_timezone on each
   # run and, per user, fetches+matches their own topics ~5 minutes before
   # their chosen send time, then emails them at it — see DECISIONS.md and
   # api/src/index.ts's own comments on /api/tick for the full model.
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 jobs:

@@ -4,6 +4,17 @@ A running log of non-trivial technical decisions for this project: what was chos
 
 > Entries below dated 2026-08-26 marked "(backfilled)" were reconstructed from the project plan and setup conversation after the fact, not logged at the moment the call was made.
 
+## 2026-08-28 — Tick scheduling: GitHub Actions `schedule` → cron-job.org
+
+**Decision:** Removed the `schedule: cron: "*/5 * * * *"` trigger from `.github/workflows/tick.yml`, keeping only `workflow_dispatch` for manual runs. `/api/tick` is now triggered externally by cron-job.org (free), which sends the same `POST /api/tick` with `Authorization: Bearer FETCH_SECRET` on the same 5-minute cadence.
+
+**Why:** discovered live — the owner didn't get their 7am digest, and investigation showed `tick.yml`'s `schedule` trigger had fired exactly once in the ~22 hours since it was deployed, and that one firing landed 51 minutes before the send window. GitHub documents that `schedule` events "can be delayed during periods of high load" and "may be dropped" for high-frequency crons on lower-traffic repos; in practice this wasn't occasional delay, it was near-total non-execution. A second, unrelated bug compounded this: an earlier manual verification run had left `last_fetch_date`/`last_digest_sent_date` set to today's date under a different digest_time, which would have silently blocked a correctly-timed tick from sending anyway — fixed by resetting those columns directly (not a recurring issue, just cleaned up once).
+
+**Alternatives considered:**
+- Render Cron Job service — rejected: no free tier (paid plan minimum), where the rest of this project has held a "free" bar throughout.
+- Keep GitHub Actions but widen `TICK_WINDOW_MINUTES` — rejected as the primary fix: widening the tolerance band only helps if GitHub fires *sometimes*; it fired essentially never over a full day, so no reasonable window would reliably catch it.
+- Self-hosted long-lived process with an in-process timer (e.g. `node-cron` on the API service itself) — rejected: the API is a free Render web service that spins down after 15 min idle, so an in-process timer would itself never fire reliably; would require upgrading off the free plan.
+
 ## 2026-08-28 — Forgot-password flow
 
 **Decision:** Added `POST /api/forgot-password` (`{ email }` → always the same generic response regardless of whether it matched an account, so the response itself can't be used to probe which emails have accounts) and `POST /api/reset-password` (`{ token, password }` → validates, updates the password, deletes the token, invalidates every existing session for that user, and logs them straight into a fresh one). Tokens live in a new `password_reset_tokens` table — same shape as `sessions`, but single-use (deleted on redemption) and short-lived (1 hour). The email itself (`sendPasswordResetEmailForUser`) links to `${SITE_URL}/?resetToken=...`; the frontend reads that query param on load, shows a "set new password" form in place of the normal login/demo UI, and strips the token from the URL via `history.replaceState` so a refresh can't re-show or resubmit it.
