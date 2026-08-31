@@ -10,8 +10,11 @@
 // Gemini Flash (not Groq): Groq deprecated its free tier; Gemini Flash's
 // free tier via Google AI Studio is the current option that costs nothing.
 
+// The "-latest" alias tracks whatever Google currently calls its small/fast
+// tier, so a future model rename (like the gemini-2.0-flash -> current one
+// this had to work around) doesn't silently 404 this again.
 const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent";
 const BATCH_SIZE = 25;
 const TIMEOUT_MS = 15_000;
 
