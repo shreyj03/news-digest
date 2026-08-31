@@ -274,16 +274,22 @@ async function sendDigestEmailForUser(user: User): Promise<boolean> {
       .map((topic, topicIndex) => {
         const items = topic.articles
           .slice(0, 5)
-          .map((a: { url: string; title: string; source: string | null }, i: number) => {
-            const outlet = extractOutlet(a.title, a.source);
-            const headline = stripOutletSuffix(a.title);
-            const borderTop = i === 0 ? "none" : "1px solid #ded2b0";
-            const padding = i === 0 ? "0 0 14px" : "14px 0";
-            return `<tr><td style="padding:${padding};border-top:${borderTop};">
+          .map(
+            (
+              a: { url: string; title: string; source: string | null; ai_summary: string | null },
+              i: number
+            ) => {
+              const outlet = extractOutlet(a.title, a.source);
+              const headline = stripOutletSuffix(a.title);
+              const borderTop = i === 0 ? "none" : "1px solid #ded2b0";
+              const padding = i === 0 ? "0 0 14px" : "14px 0";
+              return `<tr><td style="padding:${padding};border-top:${borderTop};">
               <a href="${escapeHtml(a.url)}" style="font-family:${SERIF};font-size:16px;line-height:1.35;font-weight:normal;color:#1c1a15;text-decoration:none;">${escapeHtml(headline)}</a>
+              ${a.ai_summary ? `<div style="font-family:${SERIF};font-style:italic;font-size:13px;line-height:1.4;color:#4a4638;margin-top:5px;">${escapeHtml(a.ai_summary)}</div>` : ""}
               ${outlet ? `<div style="font-family:${MONO};font-size:11px;letter-spacing:0.05em;text-transform:uppercase;color:#635c4b;margin-top:5px;">${escapeHtml(outlet)}</div>` : ""}
             </td></tr>`;
-          })
+            }
+          )
           .join("");
         const body =
           topic.articles.length > 0
@@ -945,6 +951,7 @@ interface RawArticle {
   url: string;
   source: string | null;
   summary: string | null;
+  ai_summary: string | null;
   published_at: string | null;
   score: number;
 }
@@ -955,6 +962,7 @@ function buildArticles(candidates: RawArticle[], keywords: string[]) {
     title: a.title,
     url: a.url,
     source: a.source,
+    ai_summary: a.ai_summary,
     published_at: a.published_at,
     score: a.score,
     matched: matchedKeywords(`${a.title} ${a.summary ?? ""}`, keywords),
@@ -973,7 +981,8 @@ function isValidRecentDate(dateStr: string): boolean {
   return diffDays >= 0 && diffDays <= 6;
 }
 
-const ARTICLE_COLUMNS = "a.id, a.title, a.url, a.source, a.summary, a.published_at, ta.score";
+const ARTICLE_COLUMNS =
+  "a.id, a.title, a.url, a.source, a.summary, a.ai_summary, a.published_at, ta.score";
 
 // Shared by GET /api/feed and the scheduled digest email, so both always
 // agree on what "today's feed" actually looks like.

@@ -620,6 +620,15 @@ body {
   text-decoration-color: var(--accent);
 }
 
+.ai-summary {
+  margin: 0.28rem 0 0;
+  font-family: var(--headline);
+  font-style: italic;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--ink-muted);
+}
+
 .meta {
   margin-top: 0.3rem;
   font-family: var(--mono);

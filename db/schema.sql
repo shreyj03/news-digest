@@ -66,7 +66,14 @@ CREATE TABLE IF NOT EXISTS articles (
     title TEXT NOT NULL,
     summary TEXT,
     source TEXT,
-    published_at TIMESTAMPTZ
+    published_at TIMESTAMPTZ,
+    -- One-sentence summary from a small free-tier LLM (Groq), display-only.
+    -- Separate from `summary` (the raw RSS snippet) on purpose: `summary`
+    -- still feeds match.ts's TF-IDF scoring as-is, so this column can be
+    -- null (no GROQ_API_KEY set, or the call failed) without affecting
+    -- matching at all. Populated once per article by ingest.ts, never
+    -- re-generated afterward.
+    ai_summary TEXT
 );
 
 CREATE TABLE IF NOT EXISTS topic_articles (

@@ -1,5 +1,6 @@
 import Parser from "rss-parser";
 import { pool } from "./db.js";
+import { summarizeArticles } from "./summarize.js";
 
 const parser = new Parser();
 
@@ -60,6 +61,7 @@ async function main() {
   let totalInserted = 0;
   let totalDuplicates = 0;
   let feedsFailed = 0;
+  const newlyInserted: { id: number; title: string; snippet: string | null }[] = [];
 
   for (const feed of feeds) {
     console.log(`Fetching feed: ${feed.name} (${feed.url})`);
@@ -88,22 +90,19 @@ async function main() {
         continue;
       }
 
-      const result = await pool.query(
+      const snippet = item.contentSnippet ?? null;
+      const result = await pool.query<{ id: number }>(
         `INSERT INTO articles (url, title, summary, source, published_at)
          VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (url) DO NOTHING`,
-        [
-          item.link,
-          item.title,
-          item.contentSnippet ?? null,
-          feed.name,
-          item.pubDate ? new Date(item.pubDate) : null,
-        ]
+         ON CONFLICT (url) DO NOTHING
+         RETURNING id`,
+        [item.link, item.title, snippet, feed.name, item.pubDate ? new Date(item.pubDate) : null]
       );
 
       if ((result.rowCount ?? 0) > 0) {
         totalInserted++;
         seenTitles.add(normalized);
+        newlyInserted.push({ id: result.rows[0].id, title: item.title, snippet });
       }
     }
 
@@ -114,6 +113,21 @@ async function main() {
     `Done. ${totalInserted} new article(s) inserted, ${totalDuplicates} cross-outlet duplicate(s) skipped` +
       (feedsFailed > 0 ? `, ${feedsFailed} feed(s) failed.` : ".")
   );
+
+  // Best-effort, display-only summaries for whatever's new this run — see
+  // summarize.ts for why this never blocks or fails the ingest run.
+  if (newlyInserted.length > 0) {
+    const summaries = await summarizeArticles(newlyInserted);
+    for (const [id, summary] of summaries) {
+      await pool.query("UPDATE articles SET ai_summary = $1 WHERE id = $2", [summary, id]);
+    }
+    if (summaries.size > 0) {
+      console.log(
+        `Summarized ${summaries.size}/${newlyInserted.length} new article(s) via Gemini.`
+      );
+    }
+  }
+
   await pool.end();
 }
 

@@ -10,6 +10,7 @@ interface Article {
   title: string;
   url: string;
   source: string | null;
+  ai_summary: string | null;
   published_at: string | null;
   score: number;
   matched: string[];
@@ -1026,6 +1027,9 @@ function App() {
                             <a href={article.url} target="_blank" rel="noreferrer">
                               {article.title}
                             </a>
+                            {article.ai_summary && (
+                              <p className="ai-summary">{article.ai_summary}</p>
+                            )}
                             <div className="meta">
                               {article.source ?? "Unknown source"}
                               {article.published_at &&

@@ -31,6 +31,12 @@ services:
       # redeploying to your own accounts so the email links to your site.
       - key: SITE_URL
         sync: false
+      # Optional — a free Google AI Studio key (aistudio.google.com/apikey).
+      # When set, ingest.ts asks Gemini Flash to write a one-sentence
+      # display summary for each newly-inserted article. Unset means no
+      # AI summaries, everything else works the same (see DECISIONS.md).
+      - key: GEMINI_API_KEY
+        sync: false
 
   - type: web
     name: news-digest-web

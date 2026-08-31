@@ -14,6 +14,7 @@ A personal daily news digest: sign up, tell it what topics you care about, and e
 - **Live stock tickers** — a sidebar with real-time prices and a 7-day sparkline (via Yahoo Finance) for symbols you add or remove.
 - **7-day history** — date pills above the feed let you look back at exactly what matched on any of the last 7 days, not just today.
 - **"Why did this match"** — click (or tap, on mobile) an article's signal meter to see which of the topic's keywords actually hit.
+- **AI one-line summaries** — each newly-fetched article gets a short, neutral sentence from Gemini Flash's free tier, shown under the headline in the feed and the digest email (optional — see `GEMINI_API_KEY` below).
 
 See [plan.md](./plan.md) for the original architecture and build order, and [DECISIONS.md](./DECISIONS.md) for why things were actually built the way they were — including several points where the build ended up deviating from that original plan.
 
@@ -74,5 +75,7 @@ Accounts are real email+password logins (scrypt-hashed, DB-backed sessions) — 
 5. Sign up through the real UI with whatever email you want to be the demo account, then set `DEMO_USER_EMAIL` to it and redeploy `news-digest-api` — or leave `DEMO_USER_EMAIL` unset entirely for no public demo (anonymous visitors just see an empty page with sign-up/log-in links).
 
 The free web service spins down after 15 minutes idle, so the first request after a quiet stretch has a ~30–60s cold-start delay — `/api/tick`'s 120s timeout absorbs this, though a user due right at that moment may see their digest land a few minutes later than usual that one time.
+
+**AI summaries.** Set `GEMINI_API_KEY` (a free key from [Google AI Studio](https://aistudio.google.com/apikey)) on `news-digest-api` and every newly-fetched article gets a one-sentence summary from Gemini Flash, shown under its headline in the feed and the digest email. Leave it unset to skip this — matching/scoring is unaffected either way (see DECISIONS.md's 2026-08-31 entry).
 
 **Digest & welcome email.** Set `BREVO_API_KEY` (a free [Brevo](https://www.brevo.com) account) and `DIGEST_EMAIL_FROM` (an email you've verified as a sender in Brevo — Senders, Domains & Dedicated IPs → Senders; no domain purchase needed, just confirm a code sent to that address) on `news-digest-api`, and every user with "Email me a daily digest" checked (the default) gets one at their own chosen time/timezone, plus a one-time welcome email on signup — no code changes needed, it's already wired in. Leave either unset to skip email entirely; the rest of the app (fetching, matching, viewing) still works without it. (Brevo, not a domain-verification-only provider like Resend, because its free tier lets one verified sender email send to *any* recipient — required for a multi-user app where you can't verify every user's address yourself.)
