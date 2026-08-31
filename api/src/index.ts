@@ -21,6 +21,14 @@ import {
   deleteAllSessionsForUser,
   type User,
 } from "./auth.js";
+import { suggestKeywords, defaultKeywordsFromName } from "./ai.js";
+import {
+  getLocalTimeAndDate,
+  minutesSinceMidnight,
+  withinWindow,
+  TICK_PRE_FETCH_MINUTES,
+  TICK_WINDOW_MINUTES,
+} from "./schedule.js";
 
 declare global {
   namespace Express {
@@ -276,7 +284,13 @@ async function sendDigestEmailForUser(user: User): Promise<boolean> {
           .slice(0, 5)
           .map(
             (
-              a: { url: string; title: string; source: string | null; ai_summary: string | null },
+              a: {
+                url: string;
+                title: string;
+                source: string | null;
+                ai_summary: string | null;
+                top_story: boolean;
+              },
               i: number
             ) => {
               const outlet = extractOutlet(a.title, a.source);
@@ -284,6 +298,7 @@ async function sendDigestEmailForUser(user: User): Promise<boolean> {
               const borderTop = i === 0 ? "none" : "1px solid #ded2b0";
               const padding = i === 0 ? "0 0 14px" : "14px 0";
               return `<tr><td style="padding:${padding};border-top:${borderTop};">
+              ${a.top_story ? `<div style="font-family:${MONO};font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#a3202f;margin-bottom:4px;">&#9679; Top Story</div>` : ""}
               <a href="${escapeHtml(a.url)}" style="font-family:${SERIF};font-size:16px;line-height:1.35;font-weight:normal;color:#1c1a15;text-decoration:none;">${escapeHtml(headline)}</a>
               ${a.ai_summary ? `<div style="font-family:${SERIF};font-style:italic;font-size:13px;line-height:1.4;color:#4a4638;margin-top:5px;">${escapeHtml(a.ai_summary)}</div>` : ""}
               ${outlet ? `<div style="font-family:${MONO};font-size:11px;letter-spacing:0.05em;text-transform:uppercase;color:#635c4b;margin-top:5px;">${escapeHtml(outlet)}</div>` : ""}
@@ -299,6 +314,7 @@ async function sendDigestEmailForUser(user: User): Promise<boolean> {
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
             <tr><td style="font-family:${SERIF};font-weight:bold;font-size:19px;letter-spacing:0.01em;text-transform:uppercase;color:#1c1a15;border-bottom:2px solid #1c1a15;padding-bottom:6px;">${escapeHtml(topic.name)}</td></tr>
           </table>
+          ${topic.recap ? `<p style="font-family:${SERIF};font-style:italic;font-size:14px;line-height:1.5;color:#4a4638;margin:10px 0 0;">${escapeHtml(topic.recap)}</p>` : ""}
           ${body}
         </td></tr>`;
       })
@@ -760,12 +776,28 @@ app.post(
   requireAuth,
   asyncRoute(async (req, res) => {
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-    const keywords = parseKeywords(req.body?.keywords);
+    const typedKeywords = parseKeywords(req.body?.keywords);
 
     if (!name) {
       res.status(400).json({ error: "Topic name is required." });
       return;
     }
+
+    // Ask Gemini to round out (or, if left blank, invent) this topic's
+    // keywords — matching is literal word/phrase matching (see match.ts),
+    // so a topic with too few keywords (or none) can end up never matching
+    // anything. Falls back to a plain word-split of the name if Gemini is
+    // unset or fails, so a topic is never left with zero keywords either
+    // way. Only applied on creation, not edits — an edit is an explicit
+    // "I know what I want" action and shouldn't get keywords appended
+    // without being asked.
+    const suggested = await suggestKeywords(name, typedKeywords);
+    const keywords =
+      suggested && suggested.length > 0
+        ? suggested
+        : typedKeywords.length > 0
+          ? typedKeywords
+          : defaultKeywordsFromName(name);
 
     let topic;
     try {
@@ -984,6 +1016,29 @@ function isValidRecentDate(dateStr: string): boolean {
 const ARTICLE_COLUMNS =
   "a.id, a.title, a.url, a.source, a.summary, a.ai_summary, a.published_at, ta.score";
 
+// Attaches the AI-written recap (if any) for one topic's given date, and
+// flags whichever article was picked as that date's top story. `date: null`
+// means "whatever the server's CURRENT_DATE is" (the same "today" buildFeed
+// already uses elsewhere) rather than "no recap" — that's `skip: true`.
+async function attachRecap(
+  topicId: number,
+  date: string | null,
+  articles: ReturnType<typeof buildArticles>,
+  skip = false
+) {
+  if (skip) return { recap: null as string | null, articles: articles.map((a) => ({ ...a, top_story: false })) };
+
+  const { rows } = await pool.query<{ recap: string; top_article_id: number | null }>(
+    "SELECT recap, top_article_id FROM topic_recaps WHERE topic_id = $1 AND date = COALESCE($2::date, CURRENT_DATE)",
+    [topicId, date]
+  );
+  const row = rows[0];
+  return {
+    recap: row?.recap ?? null,
+    articles: articles.map((a) => ({ ...a, top_story: row?.top_article_id === a.id })),
+  };
+}
+
 // Shared by GET /api/feed and the scheduled digest email, so both always
 // agree on what "today's feed" actually looks like.
 async function buildFeed(dateParam: string | null, userId: number) {
@@ -1007,7 +1062,12 @@ async function buildFeed(dateParam: string | null, userId: number) {
            LIMIT $3`,
           [topic.id, dateParam, RAW_CANDIDATE_LIMIT]
         );
-        return { ...topic, articles: buildArticles(candidates, topic.keywords), stale: false };
+        const { recap, articles } = await attachRecap(
+          topic.id,
+          dateParam,
+          buildArticles(candidates, topic.keywords)
+        );
+        return { ...topic, articles, stale: false, recap };
       }
 
       // "Today" per the server's clock (UTC in local dev) — matches plan.md's
@@ -1023,12 +1083,18 @@ async function buildFeed(dateParam: string | null, userId: number) {
       );
 
       if (todayCandidates.length > 0) {
-        return { ...topic, articles: buildArticles(todayCandidates, topic.keywords), stale: false };
+        const { recap, articles } = await attachRecap(
+          topic.id,
+          null,
+          buildArticles(todayCandidates, topic.keywords)
+        );
+        return { ...topic, articles, stale: false, recap };
       }
 
       // Nothing matched today — fall back to this topic's most recent
       // matches regardless of date, newest first, rather than leaving the
-      // card empty. `stale` tells the frontend to label these as such.
+      // card empty. `stale` tells the frontend to label these as such. No
+      // recap here — a recap only ever describes one specific day.
       const { rows: recentCandidates } = await pool.query<RawArticle>(
         `SELECT ${ARTICLE_COLUMNS}
          FROM topic_articles ta
@@ -1038,8 +1104,13 @@ async function buildFeed(dateParam: string | null, userId: number) {
          LIMIT $2`,
         [topic.id, RAW_CANDIDATE_LIMIT]
       );
-      const articles = buildArticles(recentCandidates, topic.keywords);
-      return { ...topic, articles, stale: articles.length > 0 };
+      const { articles } = await attachRecap(
+        topic.id,
+        null,
+        buildArticles(recentCandidates, topic.keywords),
+        true
+      );
+      return { ...topic, articles, stale: articles.length > 0, recap: null };
     })
   );
 }
@@ -1095,45 +1166,20 @@ app.post(
   })
 );
 
-// Converts an IANA timezone name into that zone's current local HH:MM and
-// YYYY-MM-DD — Intl.DateTimeFormat handles DST correctly on its own, no
-// manual offset math. en-CA's date order is conveniently YYYY-MM-DD.
-function getLocalTimeAndDate(timezone: string): { time: string; date: string } {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-CA", {
-      timeZone: timezone,
-      hourCycle: "h23",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    })
-      .formatToParts(new Date())
-      .map((p) => [p.type, p.value])
-  );
-  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
-}
+// De-dupes admin alert emails to at most one per (user, local day, reason) —
+// a persistent failure would otherwise re-alert every 5 minutes for as long
+// as it lasts. Deliberately in-memory, not a DB column: this project has
+// held a "no schema bloat for a minor throttle" bar throughout, and a reset
+// on process restart (Render's free tier redeploys/restarts periodically)
+// just means one extra duplicate alert in the rare worst case — acceptable
+// for what this is (see DECISIONS.md).
+const alertedToday = new Set<string>();
 
-function minutesSinceMidnight(hhmm: string): number {
-  const [h, m] = hhmm.split(":").map(Number);
-  return h * 60 + m;
+async function sendAdminAlert(subject: string, body: string): Promise<void> {
+  const to = process.env.ADMIN_ALERT_EMAIL;
+  if (!to) return;
+  await sendEmail(to, subject, `<p style="font-family:monospace;white-space:pre-wrap;">${escapeHtml(body)}</p>`);
 }
-
-// True if `now` has reached `target` within the last `window` minutes,
-// wrapping correctly across midnight (mod 1440) — e.g. a target of 00:02
-// with a 5-minute pre-fetch offset lands at 23:57 the previous day.
-function withinWindow(nowMinutes: number, targetMinutes: number, windowMinutes: number): boolean {
-  const diff = (((nowMinutes - targetMinutes) % 1440) + 1440) % 1440;
-  return diff < windowMinutes;
-}
-
-// How far apart the pre-send fetch and the send itself are, and how wide a
-// tolerance band each gets around its target — both tied to the tick
-// cadence (every 5 minutes; see .github/workflows/tick.yml), padded a
-// little for GitHub's own scheduler jitter.
-const TICK_PRE_FETCH_MINUTES = 5;
-const TICK_WINDOW_MINUTES = 10;
 
 // The scheduled heart of per-user delivery: every 5 minutes, for every user
 // with digest_enabled, checks whether "now" (in that user's own timezone)
@@ -1190,7 +1236,30 @@ app.post(
         }
       }
 
+      if (error) {
+        const alertKey = `${user.id}:${localDate}:${error}`;
+        if (!alertedToday.has(alertKey)) {
+          alertedToday.add(alertKey);
+          await sendAdminAlert(
+            `News Digest: tick failed for ${user.email}`,
+            `User ${user.id} (${user.email})\n${localDate} ${localTime} ${user.digest_timezone}\n\n${error}`
+          );
+        }
+      }
+
       results.push({ userId: user.id, fetched, sent, error });
+    }
+
+    // Dead-man's-switch ping (optional): as long as something keeps calling
+    // /api/tick on schedule, this fires every time, regardless of whether
+    // any user was actually due. If cron-job.org itself ever stops firing
+    // this endpoint at all — the exact failure mode that caused the missed
+    // 7am digest this replaced (see DECISIONS.md) — nothing in this process
+    // can notice that on its own; a service like healthchecks.io (free)
+    // notices instead, by alerting when an expected ping doesn't arrive.
+    const healthcheckUrl = process.env.HEALTHCHECK_PING_URL;
+    if (healthcheckUrl) {
+      fetch(healthcheckUrl, { signal: AbortSignal.timeout(5000) }).catch(() => {});
     }
 
     res.json({ ok: true, results });

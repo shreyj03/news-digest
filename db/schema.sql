@@ -76,6 +76,21 @@ CREATE TABLE IF NOT EXISTS articles (
     ai_summary TEXT
 );
 
+-- One AI-written recap per (topic, day) — generated once per match.ts run,
+-- not per view, and re-used by both GET /api/feed and the digest email so
+-- they always agree (same reasoning as topic_articles being shared). Also
+-- carries which single article (if any) stood out as the day's top story
+-- for that topic, so the UI/email can badge it — a separate concern from
+-- TF-IDF's per-article score, which has no notion of "most important."
+CREATE TABLE IF NOT EXISTS topic_recaps (
+    topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    date DATE NOT NULL,
+    recap TEXT NOT NULL,
+    top_article_id INTEGER REFERENCES articles(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (topic_id, date)
+);
+
 CREATE TABLE IF NOT EXISTS topic_articles (
     topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
     article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,

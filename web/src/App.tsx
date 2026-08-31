@@ -14,6 +14,9 @@ interface Article {
   published_at: string | null;
   score: number;
   matched: string[];
+  // The single article an AI pass picked as this topic's biggest story for
+  // the day it matched on — see topic_recaps in db/schema.sql.
+  top_story: boolean;
 }
 
 interface TopicFeed {
@@ -24,6 +27,10 @@ interface TopicFeed {
   // true when nothing matched today, so `articles` is a fallback of the
   // topic's most recent matches (any date), newest first.
   stale: boolean;
+  // AI-written 2-3 sentence recap of the day this feed reflects — null
+  // when unset (no GEMINI_API_KEY) or when `stale` (a recap only ever
+  // describes one specific day).
+  recap: string | null;
 }
 
 interface Quote {
@@ -922,7 +929,7 @@ function App() {
               <input
                 value={newKeywords}
                 onChange={(e) => setNewKeywords(e.target.value)}
-                placeholder="Keywords, comma separated"
+                placeholder="Keywords, comma separated (optional)"
               />
               <button type="submit" disabled={addingTopic}>
                 {addingTopic ? "Adding…" : "Add topic"}
@@ -930,7 +937,8 @@ function App() {
               {formError && <p className="error">{formError}</p>}
             </form>
             <p className="hint">
-              We'll search Google News for this topic's name and pull today's matches right away.
+              We'll search Google News for this topic's name and pull today's matches right away —
+              leave keywords blank (or sparse) and we'll round them out automatically.
             </p>
           </section>
         )}
@@ -1000,6 +1008,8 @@ function App() {
                   </div>
                 )}
 
+                {topic.recap && <p className="recap">{topic.recap}</p>}
+
                 {topic.articles.length === 0 ? (
                   <p className="empty">
                     {selectedDate ? "No matches on this day." : 'No matches today yet. Try "Fetch news".'}
@@ -1024,6 +1034,7 @@ function App() {
                             }
                           />
                           <div className="article-body">
+                            {article.top_story && <span className="top-story">Top story</span>}
                             <a href={article.url} target="_blank" rel="noreferrer">
                               {article.title}
                             </a>

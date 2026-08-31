@@ -1,4 +1,6 @@
 import { pool } from "./db.js";
+import { summarizeTopicRecaps } from "./summarize.js";
+import { countOccurrences } from "./textUtils.js";
 
 interface Topic {
   id: number;
@@ -10,22 +12,6 @@ interface Article {
   id: number;
   title: string;
   summary: string | null;
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * Count whole-word/whole-phrase occurrences of `needle` in `haystack` (both
- * already lowercased). Word-boundary-anchored rather than a plain substring
- * search — a short keyword like "OPT" (immigration: Optional Practical
- * Training) must not match inside unrelated words like "Options".
- */
-function countOccurrences(haystack: string, needle: string): number {
-  if (!needle) return 0;
-  const pattern = new RegExp(`\\b${escapeRegExp(needle)}\\b`, "g");
-  return haystack.match(pattern)?.length ?? 0;
 }
 
 async function main() {
@@ -153,6 +139,49 @@ async function main() {
     console.log(`  ${topic.name}: ${perTopicCounts.get(topic.id) ?? 0} article(s) matched`);
   }
   console.log(`Total (topic, article) matches: ${totalMatches}`);
+
+  // Best-effort daily recap + top-story pick per topic, based on exactly
+  // what matched *today* (server clock, same "today" buildFeed uses) —
+  // never blocks or fails the run; see summarize.ts for why.
+  const { rows: todaysMatches } = await pool.query<{
+    topic_id: number;
+    id: number;
+    title: string;
+    summary: string | null;
+  }>(
+    `SELECT ta.topic_id, a.id, a.title, a.summary
+     FROM topic_articles ta
+     JOIN articles a ON a.id = ta.article_id
+     WHERE ta.topic_id = ANY($1::int[]) AND a.published_at::date = CURRENT_DATE
+     ORDER BY ta.topic_id, ta.score DESC`,
+    [topicIds]
+  );
+
+  const articlesByTopic = new Map<number, { id: number; title: string; snippet: string | null }[]>();
+  for (const row of todaysMatches) {
+    const list = articlesByTopic.get(row.topic_id) ?? [];
+    if (list.length < 6) list.push({ id: row.id, title: row.title, snippet: row.summary });
+    articlesByTopic.set(row.topic_id, list);
+  }
+
+  const topicsForRecap = topics
+    .filter((t) => (articlesByTopic.get(t.id)?.length ?? 0) > 0)
+    .map((t) => ({ id: t.id, name: t.name, articles: articlesByTopic.get(t.id)! }));
+
+  if (topicsForRecap.length > 0) {
+    const recaps = await summarizeTopicRecaps(topicsForRecap);
+    for (const [topicId, { recap, topArticleId }] of recaps) {
+      await pool.query(
+        `INSERT INTO topic_recaps (topic_id, date, recap, top_article_id)
+         VALUES ($1, CURRENT_DATE, $2, $3)
+         ON CONFLICT (topic_id, date) DO UPDATE SET recap = EXCLUDED.recap, top_article_id = EXCLUDED.top_article_id`,
+        [topicId, recap, topArticleId]
+      );
+    }
+    if (recaps.size > 0) {
+      console.log(`Generated ${recaps.size}/${topicsForRecap.length} topic recap(s) via Gemini.`);
+    }
+  }
 
   await pool.end();
 }

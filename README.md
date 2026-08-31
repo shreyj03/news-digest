@@ -15,6 +15,8 @@ A personal daily news digest: sign up, tell it what topics you care about, and e
 - **7-day history** — date pills above the feed let you look back at exactly what matched on any of the last 7 days, not just today.
 - **"Why did this match"** — click (or tap, on mobile) an article's signal meter to see which of the topic's keywords actually hit.
 - **AI one-line summaries** — each newly-fetched article gets a short, neutral sentence from Gemini Flash's free tier, shown under the headline in the feed and the digest email (optional — see `GEMINI_API_KEY` below).
+- **Daily topic recaps + top story** — a 2-3 sentence AI recap of what's happening in each topic today, plus a "Top story" tag on whichever article stands out most, both in the feed and the digest email (same `GEMINI_API_KEY`).
+- **Keywords that fill themselves in** — leave the keywords field blank (or sparse) when adding a topic and Gemini suggests literal terms that actually show up in headlines about it, merged with anything you typed (same `GEMINI_API_KEY`; falls back to a plain word-split of the topic name if unset).
 
 See [plan.md](./plan.md) for the original architecture and build order, and [DECISIONS.md](./DECISIONS.md) for why things were actually built the way they were — including several points where the build ended up deviating from that original plan.
 
@@ -55,6 +57,15 @@ TARGET_USER_ID=1 npm run match    # scores every article against that user's top
 
 Both are safe to re-run — `ingest` skips articles it's already stored (checked against the whole shared article pool, not just this user's), and `match` fully recomputes this user's `topic_articles` each time (not an upsert, and scoped only to their own topic ids — it never touches other users' matches), so a keyword edit or scoring change can't leave stale matches behind.
 
+## Tests
+
+```
+cd api && npm test      # tick-window scheduling logic, keyword-suggestion fallback
+cd ingest && npm test   # TF-IDF word-boundary matching, cross-outlet title normalization
+```
+
+Both use [Vitest](https://vitest.dev) against pure, dependency-free modules (`api/src/schedule.ts`, `ingest/src/textUtils.ts`) — no database or running server needed.
+
 ## Deployed version — live
 
 - Frontend: https://news-digest-web.onrender.com
@@ -76,6 +87,8 @@ Accounts are real email+password logins (scrypt-hashed, DB-backed sessions) — 
 
 The free web service spins down after 15 minutes idle, so the first request after a quiet stretch has a ~30–60s cold-start delay — `/api/tick`'s 120s timeout absorbs this, though a user due right at that moment may see their digest land a few minutes later than usual that one time.
 
-**AI summaries.** Set `GEMINI_API_KEY` (a free key from [Google AI Studio](https://aistudio.google.com/apikey)) on `news-digest-api` and every newly-fetched article gets a one-sentence summary from Gemini Flash, shown under its headline in the feed and the digest email. Leave it unset to skip this — matching/scoring is unaffected either way (see DECISIONS.md's 2026-08-31 entry).
+**AI summaries, recaps, and keyword suggestions.** Set `GEMINI_API_KEY` (a free key from [Google AI Studio](https://aistudio.google.com/apikey)) on `news-digest-api` and: every newly-fetched article gets a one-sentence summary; every topic gets a daily recap paragraph plus a "Top story" pick; and a new topic's keywords get rounded out automatically. Leave it unset to skip all three — matching/scoring is unaffected either way, and topic creation falls back to a plain word-split of the name so a topic never ends up with zero keywords (see DECISIONS.md's 2026-08-31 entries).
+
+**Reliability alerting (optional).** Set `ADMIN_ALERT_EMAIL` to get an email (via the same Brevo setup below) if a user's scheduled fetch or send fails inside `/api/tick`. Separately, set `HEALTHCHECK_PING_URL` to a free [healthchecks.io](https://healthchecks.io) (or similar) check URL to catch the other failure mode — cron-job.org itself no longer calling `/api/tick` at all, which is what caused the missed-digest bug this project already fixed once (see DECISIONS.md's 2026-08-28 and 2026-08-31 entries). To set up healthchecks.io: create a free account, add a check with an expected period matching your tick cadence (5 minutes) plus some grace, copy its ping URL into `HEALTHCHECK_PING_URL`, and configure it to email or push-notify you when a ping doesn't arrive on time.
 
 **Digest & welcome email.** Set `BREVO_API_KEY` (a free [Brevo](https://www.brevo.com) account) and `DIGEST_EMAIL_FROM` (an email you've verified as a sender in Brevo — Senders, Domains & Dedicated IPs → Senders; no domain purchase needed, just confirm a code sent to that address) on `news-digest-api`, and every user with "Email me a daily digest" checked (the default) gets one at their own chosen time/timezone, plus a one-time welcome email on signup — no code changes needed, it's already wired in. Leave either unset to skip email entirely; the rest of the app (fetching, matching, viewing) still works without it. (Brevo, not a domain-verification-only provider like Resend, because its free tier lets one verified sender email send to *any* recipient — required for a multi-user app where you can't verify every user's address yourself.)

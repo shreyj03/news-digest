@@ -33,9 +33,23 @@ services:
         sync: false
       # Optional — a free Google AI Studio key (aistudio.google.com/apikey).
       # When set, ingest.ts asks Gemini Flash to write a one-sentence
-      # display summary for each newly-inserted article. Unset means no
-      # AI summaries, everything else works the same (see DECISIONS.md).
+      # display summary for each newly-inserted article, match.ts asks it
+      # for a daily per-topic recap + top-story pick, and index.ts asks it
+      # to round out a new topic's keywords. Unset means none of that,
+      # everything else works the same (see DECISIONS.md).
       - key: GEMINI_API_KEY
+        sync: false
+      # Optional — where to email an alert if a user's tick fetch or send
+      # fails (Brevo down, a DB error, etc). Unset means failures are only
+      # visible in Render's own logs, same as before this existed.
+      - key: ADMIN_ALERT_EMAIL
+        sync: false
+      # Optional — a free healthchecks.io (or similar) ping URL, hit once
+      # per /api/tick call regardless of outcome. Covers the failure mode
+      # ADMIN_ALERT_EMAIL can't: cron-job.org itself no longer calling
+      # /api/tick at all (see DECISIONS.md's 2026-08-28 tick-scheduling
+      # entry — this is exactly the bug that caused that missed digest).
+      - key: HEALTHCHECK_PING_URL
         sync: false
 
   - type: web

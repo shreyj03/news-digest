@@ -1,23 +1,9 @@
 import Parser from "rss-parser";
 import { pool } from "./db.js";
 import { summarizeArticles } from "./summarize.js";
+import { normalizeTitle } from "./textUtils.js";
 
 const parser = new Parser();
-
-// RSS titles from these feeds are conventionally "Headline - Outlet Name" —
-// strip the outlet suffix so the same story from two different outlets
-// normalizes to the same fingerprint instead of being treated as two
-// unrelated articles. Punctuation-insensitive on purpose: headlines for the
-// same story often differ in a stray comma or quote mark between outlets.
-function normalizeTitle(title: string): string {
-  const lastDash = title.lastIndexOf(" - ");
-  const withoutSource = lastDash > 0 ? title.slice(0, lastDash) : title;
-  return withoutSource
-    .toLowerCase()
-    .replace(/[^\w\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 async function main() {
   // Every run is scoped to one user's own topics — there's no global mode.

@@ -412,6 +412,15 @@ body {
   color: var(--accent);
 }
 
+.recap {
+  margin: 0.55rem 0 0;
+  font-family: var(--headline);
+  font-style: italic;
+  font-size: 0.92rem;
+  line-height: 1.48;
+  color: var(--ink-muted);
+}
+
 .topic-actions {
   display: flex;
   gap: 0.4rem;
@@ -603,6 +612,16 @@ body {
 
 .article-body {
   min-width: 0;
+}
+
+.top-story {
+  display: block;
+  margin-bottom: 0.2rem;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
 }
 
 .article-body a {
