@@ -1237,7 +1237,13 @@ app.post(
       }
 
       if (error) {
-        const alertKey = `${user.id}:${localDate}:${error}`;
+        // Keyed off just the first line, not the full error: a shelled-out
+        // command's stderr includes its child process's PID (e.g. a Node
+        // "(node:1234) Warning" line), which differs on every retry even
+        // for the exact same underlying failure — keying on the whole blob
+        // silently defeated this same-day dedup for that whole class of
+        // error, letting an identical repeated failure alert every retry.
+        const alertKey = `${user.id}:${localDate}:${error.split("\n")[0]}`;
         if (!alertedToday.has(alertKey)) {
           alertedToday.add(alertKey);
           await sendAdminAlert(

@@ -3,7 +3,18 @@ import { pool } from "./db.js";
 import { summarizeArticles } from "./summarize.js";
 import { normalizeTitle } from "./textUtils.js";
 
-const parser = new Parser();
+// A real browser User-Agent and a per-feed timeout well under the 60s the
+// API allows the whole `npm run ingest` process (see runIngestAndMatchForUser
+// in api/src/index.ts) — Google News RSS has been seen 429/tarpitting
+// requests from cloud-hosting IPs, and a single slow feed shouldn't be able
+// to eat the whole run's budget by itself.
+const parser = new Parser({
+  headers: {
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  },
+  timeout: 20_000,
+});
 
 async function main() {
   // Every run is scoped to one user's own topics — there's no global mode.
@@ -49,24 +60,35 @@ async function main() {
   let feedsFailed = 0;
   const newlyInserted: { id: number; title: string; snippet: string | null }[] = [];
 
-  for (const feed of feeds) {
-    console.log(`Fetching feed: ${feed.name} (${feed.url})`);
+  // Fetch every feed concurrently — network I/O only, no shared state — so
+  // the run's total wall-clock time is bounded by the single slowest feed
+  // rather than their sum. Sequentially, a handful of slow/rate-limited
+  // feeds could together exceed the 60s the API allows the whole process
+  // (see runIngestAndMatchForUser), getting the run killed mid-way with no
+  // chance to log a summary. A single unreachable or malformed feed still
+  // shouldn't take the rest of the run down with it — skip it and keep
+  // going.
+  console.log(`Fetching ${feeds.length} feed(s)...`);
+  const fetchResults = await Promise.allSettled(feeds.map((feed) => parser.parseURL(feed.url)));
 
-    // A single unreachable or malformed feed shouldn't take the rest of the
-    // run down with it — skip it and keep going.
-    let parsed;
-    try {
-      parsed = await parser.parseURL(feed.url);
-    } catch (err) {
+  for (let i = 0; i < feeds.length; i++) {
+    const feed = feeds[i];
+    const fetchResult = fetchResults[i];
+
+    if (fetchResult.status === "rejected") {
       feedsFailed++;
       console.error(
-        `  Failed to fetch/parse this feed, skipping it: ${
-          err instanceof Error ? err.message : "Unknown error"
+        `  Failed to fetch/parse feed "${feed.name}" (${feed.url}), skipping it: ${
+          fetchResult.reason instanceof Error ? fetchResult.reason.message : "Unknown error"
         }`
       );
       continue;
     }
+    const parsed = fetchResult.value;
 
+    // Inserts stay sequential (not part of the parallel fetch above) so the
+    // cross-outlet dedup Set below is updated consistently as we go — two
+    // different feeds carrying the same story must not both slip past it.
     for (const item of parsed.items) {
       if (!item.link || !item.title) continue;
 
