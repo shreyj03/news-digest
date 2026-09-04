@@ -7,10 +7,23 @@
 // zero across all of a topic's keywords, so an empty keyword list means a
 // topic can never match anything at all.
 
+// gemini-flash-latest (not gemini-flash-lite-latest): switched 2026-09-04,
+// see ingest/src/summarize.ts and DECISIONS.md — flash-lite-latest was
+// failing most requests with 503 "high demand".
 const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent";
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
 const TIMEOUT_MS = 10_000;
 const MAX_KEYWORDS = 10;
+// One retry after a short pause, same reasoning as summarize.ts: the 503s
+// observed are per-request overload, not sustained, so a lone retry clears
+// most of them.
+const MAX_ATTEMPTS = 2;
+const RETRY_DELAY_MS = 1_500;
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function dedupeCaseInsensitive(keywords: string[]): string[] {
   const seen = new Set<string>();
@@ -45,9 +58,6 @@ export async function suggestKeywords(
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
   const existing =
     userKeywords.length > 0
       ? ` The user already suggested: ${userKeywords.join(", ")}. Keep the good ones.`
@@ -60,47 +70,58 @@ export async function suggestKeywords(
     "synonyms, related entities, and common abbreviations. These are matched against headlines " +
     "as literal text, not semantically, so avoid vague/abstract terms.";
 
-  try {
-    const res = await fetch(GEMINI_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.3,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: "OBJECT",
-            properties: { keywords: { type: "ARRAY", items: { type: "STRING" } } },
-            required: ["keywords"],
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+    try {
+      const res = await fetch(GEMINI_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.3,
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: "OBJECT",
+              properties: { keywords: { type: "ARRAY", items: { type: "STRING" } } },
+              required: ["keywords"],
+            },
           },
-        },
-      }),
-      signal: controller.signal,
-    });
+        }),
+        signal: controller.signal,
+      });
 
-    if (!res.ok) {
-      console.error(`Gemini keyword suggestion failed: ${res.status} ${res.statusText}`);
+      if (!res.ok) {
+        console.error(`Gemini keyword suggestion failed: ${res.status} ${res.statusText}`);
+        if (RETRYABLE_STATUS.has(res.status) && attempt < MAX_ATTEMPTS) {
+          await sleep(RETRY_DELAY_MS);
+          continue;
+        }
+        return null;
+      }
+
+      const data = (await res.json()) as {
+        candidates?: { content?: { parts?: { text?: string }[] } }[];
+      };
+      const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!content) return null;
+
+      const parsed = JSON.parse(content) as { keywords?: unknown };
+      if (!Array.isArray(parsed.keywords)) return null;
+
+      const suggested = parsed.keywords.filter((k): k is string => typeof k === "string" && k.trim().length > 0);
+      return dedupeCaseInsensitive([...userKeywords, ...suggested]);
+    } catch (err) {
+      console.error(
+        `Gemini keyword suggestion failed: ${err instanceof Error ? err.message : "Unknown error"}`
+      );
       return null;
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const data = (await res.json()) as {
-      candidates?: { content?: { parts?: { text?: string }[] } }[];
-    };
-    const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!content) return null;
-
-    const parsed = JSON.parse(content) as { keywords?: unknown };
-    if (!Array.isArray(parsed.keywords)) return null;
-
-    const suggested = parsed.keywords.filter((k): k is string => typeof k === "string" && k.trim().length > 0);
-    return dedupeCaseInsensitive([...userKeywords, ...suggested]);
-  } catch (err) {
-    console.error(
-      `Gemini keyword suggestion failed: ${err instanceof Error ? err.message : "Unknown error"}`
-    );
-    return null;
-  } finally {
-    clearTimeout(timeout);
   }
+
+  return null;
 }

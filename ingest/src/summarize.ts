@@ -11,8 +11,28 @@
 // The "-latest" alias tracks whatever Google currently calls its small/fast
 // tier, so a future model rename (like the gemini-2.0-flash -> current one
 // this had to work around) doesn't silently 404 this again.
+//
+// gemini-flash-latest (not gemini-flash-lite-latest): switched 2026-09-04
+// after live testing showed flash-lite-latest failing most requests with
+// 503 "high demand" while flash-latest succeeded far more often on the
+// same key at the same moment — see DECISIONS.md.
 const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent";
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
+
+// Google's shared free-tier Flash-Lite model returns 503 "currently
+// experiencing high demand" often enough in practice (observed ~2 of 3
+// requests in a row) that a single attempt was silently losing most
+// batches — this is what actually broke both summaries and recaps for
+// days straight, not an invalid key or a code bug (see DECISIONS.md).
+// One retry after a short pause clears the large majority of these, since
+// the overload is at the request level, not sustained per-caller.
+const MAX_ATTEMPTS = 2;
+const RETRY_DELAY_MS = 1_500;
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function callGemini(
   prompt: string,
@@ -20,45 +40,53 @@ async function callGemini(
   apiKey: string,
   timeoutMs: number
 ): Promise<unknown | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-  try {
-    const res = await fetch(GEMINI_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
-      },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.2,
-          responseMimeType: "application/json",
-          responseSchema,
+    try {
+      const res = await fetch(GEMINI_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
         },
-      }),
-      signal: controller.signal,
-    });
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.2,
+            responseMimeType: "application/json",
+            responseSchema,
+          },
+        }),
+        signal: controller.signal,
+      });
 
-    if (!res.ok) {
-      console.error(`  Gemini request failed: ${res.status} ${res.statusText}`);
+      if (!res.ok) {
+        console.error(`  Gemini request failed: ${res.status} ${res.statusText}`);
+        if (RETRYABLE_STATUS.has(res.status) && attempt < MAX_ATTEMPTS) {
+          await sleep(RETRY_DELAY_MS);
+          continue;
+        }
+        return null;
+      }
+
+      const data = (await res.json()) as {
+        candidates?: { content?: { parts?: { text?: string }[] } }[];
+      };
+      const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!content) return null;
+
+      return JSON.parse(content);
+    } catch (err) {
+      console.error(`  Gemini request failed: ${err instanceof Error ? err.message : "Unknown error"}`);
       return null;
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const data = (await res.json()) as {
-      candidates?: { content?: { parts?: { text?: string }[] } }[];
-    };
-    const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!content) return null;
-
-    return JSON.parse(content);
-  } catch (err) {
-    console.error(`  Gemini request failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-    return null;
-  } finally {
-    clearTimeout(timeout);
   }
+
+  return null;
 }
 
 interface ArticleInput {
