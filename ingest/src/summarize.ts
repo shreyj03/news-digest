@@ -29,20 +29,44 @@ const GEMINI_URL =
 const MAX_ATTEMPTS = 2;
 const RETRY_DELAY_MS = 1_500;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+// A single call+retry attempt needs at least this much time left to be
+// worth starting at all — below this, skip rather than start a call that
+// can't meaningfully complete before the deadline anyway.
+const MIN_ATTEMPT_BUDGET_MS = 3_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// `deadline` (an absolute Date.now()-style timestamp, not a duration) is
+// what actually caused a real tick failure on 2026-09-11: the retry added
+// above for the 503 problem meant one slow-but-not-fast-failing batch
+// (Gemini timing out instead of rejecting quickly) could burn 15s+1.5s+15s
+// on its own, and a second slow batch on top of that pushed the whole
+// `npm run ingest` process past the 60s its parent allows the entire run
+// (see runIngestAndMatchForUser in api/src/index.ts and the 2026-09-03
+// entry in DECISIONS.md for that same class of bug in feed-fetching) —
+// getting the process SIGTERM'd. Summaries/recaps are meant to be
+// best-effort and never able to break a run on their own; every caller
+// here shrinks its own per-attempt timeout to whatever's left of the
+// shared deadline, and skips entirely rather than start a doomed attempt.
 async function callGemini(
   prompt: string,
   responseSchema: object,
   apiKey: string,
-  timeoutMs: number
+  timeoutMs: number,
+  deadline: number
 ): Promise<unknown | null> {
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining < MIN_ATTEMPT_BUDGET_MS) {
+      console.error("  Gemini request skipped: out of time budget for this run.");
+      return null;
+    }
+
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const effectiveTimeoutMs = Math.min(timeoutMs, remaining);
+    const timeout = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
     try {
       const res = await fetch(GEMINI_URL, {
@@ -64,7 +88,11 @@ async function callGemini(
 
       if (!res.ok) {
         console.error(`  Gemini request failed: ${res.status} ${res.statusText}`);
-        if (RETRYABLE_STATUS.has(res.status) && attempt < MAX_ATTEMPTS) {
+        if (
+          RETRYABLE_STATUS.has(res.status) &&
+          attempt < MAX_ATTEMPTS &&
+          deadline - Date.now() >= RETRY_DELAY_MS + MIN_ATTEMPT_BUDGET_MS
+        ) {
           await sleep(RETRY_DELAY_MS);
           continue;
         }
@@ -97,10 +125,16 @@ interface ArticleInput {
 
 const SUMMARY_BATCH_SIZE = 25;
 const SUMMARY_TIMEOUT_MS = 15_000;
+// ingest.ts's whole `npm run ingest` process gets 60s total (fetch + insert
+// + this); feed fetching is parallelized and its own per-feed timeout caps
+// it well under that, but this budget is what actually keeps summarization
+// from being the thing that pushes the run over — see callGemini's comment.
+const SUMMARY_TOTAL_BUDGET_MS = 30_000;
 
 async function summarizeArticleBatch(
   batch: ArticleInput[],
-  apiKey: string
+  apiKey: string,
+  deadline: number
 ): Promise<Map<number, string>> {
   const result = new Map<number, string>();
 
@@ -123,7 +157,8 @@ async function summarizeArticleBatch(
       required: ["summaries"],
     },
     apiKey,
-    SUMMARY_TIMEOUT_MS
+    SUMMARY_TIMEOUT_MS,
+    deadline
   )) as { summaries?: unknown } | null;
 
   if (!parsed || !Array.isArray(parsed.summaries) || parsed.summaries.length !== batch.length) {
@@ -145,9 +180,19 @@ export async function summarizeArticles(articles: ArticleInput[]): Promise<Map<n
   const combined = new Map<number, string>();
   if (!apiKey || articles.length === 0) return combined;
 
+  const deadline = Date.now() + SUMMARY_TOTAL_BUDGET_MS;
+
   for (let i = 0; i < articles.length; i += SUMMARY_BATCH_SIZE) {
+    if (Date.now() >= deadline) {
+      console.error(
+        `  Hit the ${SUMMARY_TOTAL_BUDGET_MS / 1000}s AI summary time budget — skipping ${
+          articles.length - i
+        } remaining article(s) this run.`
+      );
+      break;
+    }
     const batch = articles.slice(i, i + SUMMARY_BATCH_SIZE);
-    const batchResult = await summarizeArticleBatch(batch, apiKey);
+    const batchResult = await summarizeArticleBatch(batch, apiKey, deadline);
     for (const [id, summary] of batchResult) combined.set(id, summary);
   }
 
@@ -170,10 +215,15 @@ const RECAP_BATCH_SIZE = 10;
 // topic is a heavier reasoning task than a flat one-sentence-per-item
 // summary, and it measurably needed more than 15s in practice.
 const RECAP_TIMEOUT_MS = 25_000;
+// match.ts's `npm run match` also gets a 60s total budget (its own
+// separate exec call from ingest.ts's) shared with the TF-IDF scoring and
+// DB writes that run before this — see SUMMARY_TOTAL_BUDGET_MS above.
+const RECAP_TOTAL_BUDGET_MS = 30_000;
 
 async function recapTopicBatch(
   batch: TopicForRecap[],
-  apiKey: string
+  apiKey: string,
+  deadline: number
 ): Promise<Map<number, TopicRecap>> {
   const result = new Map<number, TopicRecap>();
 
@@ -215,7 +265,8 @@ async function recapTopicBatch(
       required: ["topics"],
     },
     apiKey,
-    RECAP_TIMEOUT_MS
+    RECAP_TIMEOUT_MS,
+    deadline
   )) as { topics?: unknown } | null;
 
   if (!parsed || !Array.isArray(parsed.topics) || parsed.topics.length !== batch.length) {
@@ -250,9 +301,19 @@ export async function summarizeTopicRecaps(
   const combined = new Map<number, TopicRecap>();
   if (!apiKey || topics.length === 0) return combined;
 
+  const deadline = Date.now() + RECAP_TOTAL_BUDGET_MS;
+
   for (let i = 0; i < topics.length; i += RECAP_BATCH_SIZE) {
+    if (Date.now() >= deadline) {
+      console.error(
+        `  Hit the ${RECAP_TOTAL_BUDGET_MS / 1000}s AI recap time budget — skipping ${
+          topics.length - i
+        } remaining topic(s) this run.`
+      );
+      break;
+    }
     const batch = topics.slice(i, i + RECAP_BATCH_SIZE);
-    const batchResult = await recapTopicBatch(batch, apiKey);
+    const batchResult = await recapTopicBatch(batch, apiKey, deadline);
     for (const [id, recap] of batchResult) combined.set(id, recap);
   }
 
