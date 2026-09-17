@@ -51,6 +51,19 @@ const port = process.env.PORT ?? 3001;
 app.use(cors());
 app.use(express.json());
 
+// Deliberately does not touch the DB — a separate, more frequent
+// cron-job.org ping (e.g. every 10 min) hits this purely to keep this
+// Render free-tier service itself from spinning down after ~15 minutes
+// idle, independent of /api/tick's own (slower, DB-touching) 15-minute
+// cadence. Widening /api/tick's interval to 15 min to let the Postgres
+// compute auto-suspend (see DECISIONS.md's 2026-09-17 entry) incidentally
+// removed the side effect that used to keep Render itself awake too —
+// this restores that without adding any Neon compute cost, since it never
+// opens a DB connection.
+app.get("/health", (_req, res) => {
+  res.sendStatus(200);
+});
+
 // Express 4 doesn't catch rejected promises from async handlers on its own —
 // an unhandled DB error in a POST/PUT/DELETE would otherwise just hang the
 // client with no response. This wrapper forwards any rejection to next(),
