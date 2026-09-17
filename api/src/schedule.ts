@@ -36,7 +36,15 @@ export function withinWindow(nowMinutes: number, targetMinutes: number, windowMi
 
 // How far apart the pre-send fetch and the send itself are, and how wide a
 // tolerance band each gets around its target — both tied to the tick
-// cadence (every 5 minutes; see .github/workflows/tick.yml), padded a
-// little for GitHub's own scheduler jitter.
-export const TICK_PRE_FETCH_MINUTES = 5;
-export const TICK_WINDOW_MINUTES = 10;
+// cadence (every 15 minutes, configured on cron-job.org's side, not in
+// this repo — see DECISIONS.md's 2026-08-28 "Tick scheduling" entry for
+// why cron-job.org and not GitHub Actions), padded for polling jitter.
+// Scaled up 3x together from the original 5/10 (interval was 5 min) when
+// the interval itself was widened to 15 min on 2026-09-17: Neon's Free
+// plan only auto-suspends its compute after 5 idle minutes, and a query
+// landing every 5 minutes never let it go idle at all, burning the whole
+// month's compute allowance in 17 days. Keeping the same 1:1 pre-fetch and
+// 2:1 window ratios to the interval preserves the original design's
+// safety margin rather than picking new numbers from scratch.
+export const TICK_PRE_FETCH_MINUTES = 15;
+export const TICK_WINDOW_MINUTES = 30;
