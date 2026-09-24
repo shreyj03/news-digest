@@ -60,11 +60,16 @@ Both are safe to re-run — `ingest` skips articles it's already stored (checked
 ## Tests
 
 ```
-cd api && npm test      # tick-window scheduling logic, keyword-suggestion fallback
+cd api && npm test      # tick-window scheduling, timezone validation, keyword-suggestion fallback
 cd ingest && npm test   # TF-IDF word-boundary matching, cross-outlet title normalization
+cd e2e && npm test      # Playwright: API + browser tests (see e2e/README.md)
 ```
 
-Both use [Vitest](https://vitest.dev) against pure, dependency-free modules (`api/src/schedule.ts`, `ingest/src/textUtils.ts`) — no database or running server needed.
+The two Vitest suites test pure, dependency-free modules (`api/src/schedule.ts`, `ingest/src/textUtils.ts`) — no
+database or running server needed. The Playwright suite in [`e2e/`](./e2e/README.md) drives the real API and
+frontend against a throwaway Postgres database (needs the `news-postgres` container running): 142 runs covering
+auth, multi-user isolation, topic CRUD, the feed, the scheduler and digest settings, on Chromium, a phone-sized
+Chromium, Firefox and WebKit. It runs in CI on every push and pull request (`.github/workflows/e2e.yml`).
 
 ## Deployed version — live
 

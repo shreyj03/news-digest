@@ -1,0 +1,85 @@
+name: E2E
+
+# Runs the Playwright suite in e2e/ — HTTP-level API tests plus browser tests
+# on Chromium, a phone-sized Chromium, Firefox and WebKit — against a fresh
+# Postgres. Nothing here touches Neon, Render, Brevo or Gemini: the suite
+# builds its own throwaway database from db/schema.sql and stubs ingestion
+# (see e2e/README.md).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  playwright:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: newsdev
+        # Host port 5433 matches the suite's default (and the local dev
+        # container), so no E2E_PG_ADMIN_URL override is needed here.
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            api/package-lock.json
+            web/package-lock.json
+            e2e/package-lock.json
+
+      # The API and the Vite dev server both run from source during the
+      # tests, so each needs its own dependencies. ingest/ is not needed —
+      # the API's INGEST_DIR points at a stub.
+      - run: npm ci --prefix api
+      - run: npm ci --prefix web
+      - run: npm ci --prefix e2e
+
+      - name: Unit tests (Vitest)
+        run: npm test --prefix api
+
+      - name: Install browsers
+        run: npx playwright install --with-deps chromium firefox webkit
+        working-directory: e2e
+
+      - name: Playwright tests
+        run: npx playwright test
+        working-directory: e2e
+        env:
+          CI: "true"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: e2e/playwright-report/
+          retention-days: 14
+
+      # Traces, screenshots and videos for anything that failed or needed a retry.
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-traces
+          path: e2e/test-results/
+          retention-days: 7
+          if-no-files-found: ignore

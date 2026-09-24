@@ -1,0 +1,9 @@
+{
+  "name": "ingest-stub",
+  "private": true,
+  "description": "Stands in for ../../ingest during e2e runs (the API's INGEST_DIR points here) so creating or editing a topic never hits Google News — the network call is slow, rate-limited on shared CI IPs, and would make the feed non-deterministic.",
+  "scripts": {
+    "ingest": "node -e \"console.log('stub ingest: skipped (e2e)')\"",
+    "match": "node -e \"console.log('stub match: skipped (e2e)')\""
+  }
+}
