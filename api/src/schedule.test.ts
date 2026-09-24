@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { minutesSinceMidnight, withinWindow, getLocalTimeAndDate } from "./schedule.js";
+import { minutesSinceMidnight, withinWindow, getLocalTimeAndDate, isValidTimezone } from "./schedule.js";
 
 describe("minutesSinceMidnight", () => {
   it("converts HH:MM to minutes since midnight", () => {
@@ -53,5 +53,31 @@ describe("getLocalTimeAndDate", () => {
     const la = getLocalTimeAndDate("America/Los_Angeles");
     const tokyo = getLocalTimeAndDate("Asia/Tokyo");
     expect(minutesSinceMidnight(tokyo.time)).not.toBe(minutesSinceMidnight(la.time));
+  });
+});
+
+describe("isValidTimezone", () => {
+  it("accepts ordinary IANA names", () => {
+    for (const tz of ["America/New_York", "America/Los_Angeles", "Europe/London", "Asia/Tokyo", "UTC"]) {
+      expect(isValidTimezone(tz), tz).toBe(true);
+    }
+  });
+
+  // Firefox and Safari report the modern names; Node's own list only has the
+  // legacy spellings. Both must be accepted or those users' zones 400.
+  it("accepts both the legacy and the modern spelling of a renamed zone", () => {
+    const pairs = [
+      ["Asia/Calcutta", "Asia/Kolkata"],
+      ["Europe/Kiev", "Europe/Kyiv"],
+      ["Asia/Saigon", "Asia/Ho_Chi_Minh"],
+      ["Asia/Katmandu", "Asia/Kathmandu"],
+    ];
+    for (const names of pairs) for (const tz of names) expect(isValidTimezone(tz), tz).toBe(true);
+  });
+
+  it("rejects garbage, bare aliases, offsets, and stray whitespace", () => {
+    for (const tz of ["Mars/Olympus_Mons", "", "PST", "+05:30", "-08:00", "America/New_York ", " UTC", "Asia/"]) {
+      expect(isValidTimezone(tz), JSON.stringify(tz)).toBe(false);
+    }
   });
 });

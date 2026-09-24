@@ -28,6 +28,7 @@ import {
   withinWindow,
   TICK_PRE_FETCH_MINUTES,
   TICK_WINDOW_MINUTES,
+  isValidTimezone,
 } from "./schedule.js";
 
 declare global {
@@ -43,7 +44,10 @@ const execAsync = promisify(exec);
 // location rather than process.cwd() so it doesn't matter where `npm run
 // dev`/`tsx` was actually launched from.
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const INGEST_DIR = path.join(PROJECT_ROOT, "ingest");
+// Overridable only so the Playwright suite (e2e/) can point this at a no-op
+// stub instead of hitting Google News on every topic create/edit — unset in
+// every real environment.
+const INGEST_DIR = process.env.INGEST_DIR ?? path.join(PROJECT_ROOT, "ingest");
 
 const app = express();
 const port = process.env.PORT ?? 3001;
@@ -568,12 +572,6 @@ function isValidEmail(email: string): boolean {
   // full RFC 5322 parser. Real validation is "can they receive the digest
   // email," which nothing short of actually sending one can confirm.
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-const VALID_TIMEZONES = new Set(Intl.supportedValuesOf("timeZone"));
-
-function isValidTimezone(tz: string): boolean {
-  return VALID_TIMEZONES.has(tz);
 }
 
 function isValidTimeString(time: string): boolean {
